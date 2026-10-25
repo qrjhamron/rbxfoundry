@@ -225,7 +225,7 @@ Studio comparison and none is claimed to be.
 | Undo/redo | Supported | File-snapshot history in `<place>.bloxhistory/` (100 cap, decode-checked restores, redo cleared on mutation). Not stored inside the place file. |
 | `--json` agent output | Supported | Every command. Errors: stderr text + exit code (1 = error/invalid, 2 = usage). |
 | Engine IPC | Supported | Versioned JSON-RPC 2.0, protocol `"1"`, `initialize` handshake enforced. |
-| Long-lived daemon across CLI invocations | Unsupported | Engine persists for one command session; files are the durable state. |
+| Long-lived daemon across CLI invocations | Supported | Phase 25 `blox studio` daemon (plus existing play/net/debug daemons); files remain the save format, sessions hold unsaved state. |
 | Automated tests | Supported | C++ (`ctest`, 2 suites): DataModel/hierarchy/transforms plus geometry/scene extraction/mesh parsing. Rust (`cargo test`): Phase 1 workflows + genuine-binary byte checks + format round-trips; Phase 2 editing; Phase 3 render tests (pixel probes for geometry/occlusion/cameras/determinism/shadows/time-of-day/transparency/materials, mesh UV orientation, checker mapping, missing-asset reporting, RBXL mesh round-trip, quality presets, named regression scenes); Phase 4 UI tests (exact layout rects, pixel probes incl. rasterised text, hit-testing, offscreen validation, list layout, device presets, SurfaceGui compositing). |
 
 ## Dependency evaluation notes
@@ -250,3 +250,24 @@ Studio comparison and none is claimed to be.
   compiled to SPIR-V at build time with `glslangValidator` and embedded
   in the engine binary; PNG via libpng; text via FreeType with the
   system DejaVu Sans as the legally distributable font.
+
+## Phase 25-29 + GUI Fidelity additions (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Persistent Studio session (`blox studio`, MCP `studio_session_*`) | INTERNAL_VERIFIED | One engine serves 100 CLI ops; unsaved state stays in memory; MCP sees identical values; kill -9 recovery from atomic snapshots; save conflict detection (`phase25.rs`). Docs: `PHASE25_SESSIONS.md` |
+| Terrain Luau APIs + `Region3` datatype | INTERNAL_VERIFIED | FillCylinder/FillWedge/FillRegion/WriteVoxels/CopyRegion/PasteRegion over the BTR1 grid, resolution 4 only (`phase26.rs`). Genuine Studio terrain chunks: UNSUPPORTED (BTR1 documented) |
+| CSG booleans (Union/Negate/Separate/Intersect) | UNSUPPORTED | No CSG engine; UnionOperation data preserved opaquely, never relabelled. Not faked |
+| Serialized `Region3`/`MaterialColors`/`UniqueId` properties | PARTIAL | Still fail loudly on export rather than being dropped (unchanged) |
+| TweenService: `TweenInfo`, easing math, UDim/UDim2, delay/repeat/reverse, PlaybackState | INTERNAL_VERIFIED | Fixed-alpha Sine/Quad assertions + lifecycle tests (`phase27.rs`). Completed/PlaybackState payloads are strings, not EnumItems (documented partial in `GUI_FIDELITY.md`) |
+| PhysicalProperties fidelity | PARTIAL | Density/friction/elasticity honoured by Jolt bodies; material-default tables and weight blending not implemented |
+| `Touched`/`TouchEnded` + `CanTouch` | PARTIAL | Contact-pair lifecycle over body AABBs; no manifolds, collision groups, or non-collidable sensors |
+| DataStoreService (offline emulation) | PARTIAL | Get/Set/Update/Increment/Remove + budget, `<place>.bloxdata` JSON persistence across restarts; Ordered paging/versions unsupported; clearly local, never Roblox cloud |
+| HttpService | PARTIAL | JSONEncode/Decode + GenerateGUID local; Get/Post/RequestAsync blocked (offline, no network) |
+| MarketplaceService / TeleportService | UNSUPPORTED | No simulated purchases or teleports; nothing fabricated |
+| Plugin API | PARTIAL | CLI/MCP editing + Phase 25 selection; no DockWidget/toolbar UI |
+| GUI fonts (27A) | PARTIAL | FreeType chains + kerning; no HarfBuzz shaping/ligatures/bidi/colour emoji |
+| GUI input (27E) | PARTIAL | Click/hover/focus/typing via real runtime layout; gamepad selection navigation partial |
+
+Methodology: statuses are `INTERNAL_VERIFIED`/`PARTIAL`/`UNSUPPORTED` only;
+no Studio comparison was run for any row in this program (`UNTESTED`).

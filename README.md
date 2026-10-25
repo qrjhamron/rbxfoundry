@@ -17,6 +17,11 @@ for AI coding agents.
 > automated tests only — this environment has no Roblox Studio, and no
 > 1:1 parity is claimed. See [COMPATIBILITY.md](COMPATIBILITY.md).
 
+## Persistent sessions and offline services (Phase 25-29)
+
+- `blox studio start|status|save|stop <place.rbxl>` — persistent editing session: one engine serves many CLI/MCP invocations, unsaved edits stay in memory, undo/redo works across commands, killed sessions recover from atomic snapshots (see [Phase 25 sessions](docs/PHASE25_SESSIONS.md)).
+- Terrain Luau APIs (`FillCylinder`, `WriteVoxels`, `Region3`), real TweenService (`TweenInfo` + easing), `TouchEnded`, and an offline DataStoreService emulation (`<place>.bloxdata/`) — see [geometry/serialization](docs/PHASE26_GEOMETRY_SERIALIZATION.md), [GUI fidelity](docs/GUI_FIDELITY.md) and [services](docs/PHASE29_SERVICES.md). No Roblox cloud access is claimed.
+
 ## Architecture
 
 ```

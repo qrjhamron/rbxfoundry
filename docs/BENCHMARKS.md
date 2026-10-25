@@ -59,3 +59,17 @@ operations match the pre-refactor baseline in ARCHITECTURE_AUDIT.md.
 
 Conclusion: no meaningful performance regression; end-to-end timings
 are dominated by process startup (~0.15 s) as before.
+
+## Phase 25-29 check (same host, post-implementation)
+
+| Operation | Value |
+| --- | ---: |
+| render 800x600 (200 parts) | 0.49 s |
+| ui render 1920x1080 | 0.51 s |
+| export rbxl -> rbxlx | 0.46 s |
+| validate | 0.18 s |
+| tree (213 instances) | 0.19 s |
+| play step x240 (physics) | 0.14 s |
+| Studio session: 100 sequential CLI ops on one daemon | covered by `phase25.rs` (whole test ~1.6 s incl. process spawns) |
+
+No meaningful regression vs the Phase 25-29 baseline (ARCHITECTURE_AUDIT.md).
