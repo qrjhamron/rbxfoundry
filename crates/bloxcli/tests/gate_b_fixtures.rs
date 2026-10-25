@@ -114,3 +114,113 @@ fn animated_inventory_fixture_end_to_end() {
         other => panic!("script Source: {other:?}"),
     }
 }
+
+fn render_probe(f: &str, dir: &PathBuf, tag: &str, w: &str, h: &str, probe: &str) -> serde_json::Value {
+    let out = dir.join(format!("{tag}.png"));
+    let r = cli_json(&["ui", "render", f, "--ignore-inset", "--output", out.to_str().unwrap(), "--width", w, "--height", h, "--probe", probe]);
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.len() > 200 && &bytes[0..4] == b"\x89PNG", "{tag} png genuine");
+    r
+}
+fn check_export(dir: &PathBuf, f: &str, must_contain: &[&str]) {
+    let exported = dir.join("reexport.rbxlx");
+    cli_ok(&["export", f, exported.to_str().unwrap()]);
+    let (node, _) = bloxcli::rbxio::read_place(&exported).expect("reimport fixture");
+    let text = format!("{:?}", node);
+    for needle in must_contain { assert!(text.contains(needle), "export contains {needle}"); }
+}
+
+#[test]
+fn shop_settings_mobile_menu_fixtures() {
+    // ---------- Shop: grid of item cards with prices ----------
+    let dir = temp_dir("shop");
+    let file = dir.join("game.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    add(&f, "StarterGui", "ScreenGui", "HUD");
+    add(&f, "StarterGui/HUD", "Frame", "Shop");
+    set(&f, "StarterGui/HUD/Shop", "Size", "UDim2", "0,480,0,320");
+    set(&f, "StarterGui/HUD/Shop", "Position", "UDim2", "0,40,0,40");
+    set(&f, "StarterGui/HUD/Shop", "BackgroundColor3", "Color3", "0.12,0.12,0.16");
+    add(&f, "StarterGui/HUD/Shop", "UIGridLayout", "Grid");
+    set(&f, "StarterGui/HUD/Shop/Grid", "CellSize", "UDim2", "0,100,0,120");
+    for i in 1..=4 {
+        let card = format!("Item{i}");
+        add(&f, "StarterGui/HUD/Shop", "TextButton", &card);
+        set(&f, &format!("StarterGui/HUD/Shop/{card}"), "Text", "String", &format!("Sword {i}\n$ {i}00"));
+        set(&f, &format!("StarterGui/HUD/Shop/{card}"), "BackgroundColor3", "Color3", "0.2,0.5,0.9");
+    }
+    let r = render_probe(&f, &dir, "shop-desktop", "1920", "1080", "90,100");
+    assert!(r["probes"][0]["rgba"][2].as_i64().unwrap() > 100, "shop card renders blue-ish: {r}");
+    let v = cli_json(&["ui", "validate", &f]);
+    assert_eq!(v["valid"], true, "shop validates: {v}");
+    check_export(&dir, &f, &["Item4", "UIGridLayout"]);
+
+    // ---------- Settings: list layout with toggles ----------
+    let dir = temp_dir("settings");
+    let file = dir.join("game.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    add(&f, "StarterGui", "ScreenGui", "HUD");
+    add(&f, "StarterGui/HUD", "ScrollingFrame", "Settings");
+    set(&f, "StarterGui/HUD/Settings", "Size", "UDim2", "0,360,0,400");
+    set(&f, "StarterGui/HUD/Settings", "Position", "UDim2", "0,30,0,30");
+    add(&f, "StarterGui/HUD/Settings", "UIListLayout", "List");
+    for name in ["Music", "Effects", "Shadows"] {
+        add(&f, "StarterGui/HUD/Settings", "TextButton", name);
+        set(&f, &format!("StarterGui/HUD/Settings/{name}"), "Size", "UDim2", "1,0,0,48");
+        set(&f, &format!("StarterGui/HUD/Settings/{name}"), "Text", "String", name);
+        set(&f, &format!("StarterGui/HUD/Settings/{name}"), "BackgroundColor3", "Color3", "0.25,0.25,0.3");
+    }
+    let r = render_probe(&f, &dir, "settings-desktop", "1366", "768", "100,60");
+    assert!(r["probes"][0]["rgba"][0].as_i64().unwrap() > 40, "settings row renders: {r}");
+    check_export(&dir, &f, &["ScrollingFrame", "Shadows"]);
+
+    // ---------- Mobile interface at 390x844 ----------
+    let dir = temp_dir("mobile");
+    let file = dir.join("game.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    add(&f, "StarterGui", "ScreenGui", "HUD");
+    add(&f, "StarterGui/HUD", "TextButton", "Jump");
+    set(&f, "StarterGui/HUD/Jump", "Size", "UDim2", "0,84,0,84");
+    set(&f, "StarterGui/HUD/Jump", "Position", "UDim2", "1,-100,1,-120");
+    set(&f, "StarterGui/HUD/Jump", "Text", "String", "JUMP");
+    set(&f, "StarterGui/HUD/Jump", "BackgroundColor3", "Color3", "0.9,0.55,0.15");
+    let json = cli_json(&["ui", "inspect", &f, "--device", "mobile"]);
+    let jump = json["rects"].as_array().unwrap().iter().find(|r| r["path"].as_str().unwrap().ends_with("/Jump")).expect("jump rect");
+    assert!((jump["x"].as_f64().unwrap() - 290.0).abs() < 3.0, "mobile jump anchored bottom-right: {jump}");
+    let r = render_probe(&f, &dir, "mobile", "390", "844", "330,760");
+    assert!(r["probes"][0]["rgba"][0].as_i64().unwrap() > 150, "mobile button renders orange: {r}");
+    check_export(&dir, &f, &["Jump"]);
+
+    // ---------- Animated menu (tween verified on scheduler time) ----------
+    let dir = temp_dir("menu");
+    let file = dir.join("game.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    add(&f, "StarterGui", "ScreenGui", "HUD");
+    add(&f, "StarterGui/HUD", "Frame", "Menu");
+    set(&f, "StarterGui/HUD/Menu", "Size", "UDim2", "0,260,0,180");
+    set(&f, "StarterGui/HUD/Menu", "Position", "UDim2", "0.5,0,0,-200");
+    set(&f, "StarterGui/HUD/Menu", "AnchorPoint", "Vector2", "0.5,0");
+    set(&f, "StarterGui/HUD/Menu", "BackgroundColor3", "Color3", "0.1,0.7,0.4");
+    cli_ok(&["add", &f, "--parent", "ServerScriptService", "--class", "Script", "--name", "Main"]);
+    set(&f, "ServerScriptService/Main", "Source", "String", r#"
+        local menu = game.StarterGui.HUD.Menu
+        game:GetService("TweenService"):Create(menu, TweenInfo.new(1, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+            {Position = UDim2.new(0.5, 0, 0, 60)}):Play()
+    "#);
+    let out = dir.join("runtime.rbxl");
+    cli_json(&["run", &f, "--duration", "0.5", "--step", "0.05", "--save-runtime", out.to_str().unwrap()]);
+    let (mid, _) = bloxcli::rbxio::read_place(&out).expect("mid runtime");
+    let menu_mid = mid.find_path("StarterGui/HUD/Menu").expect("menu mid");
+    let mid_y = match menu_mid.properties.get("Position") { Some(bloxcli::tree::PropValue::UDim2(v)) => v[3], _ => panic!("mid Position") };
+    assert!(mid_y > 60.0, "menu mid-flight Back overshoot past goal: y={mid_y}");
+    let out2 = dir.join("runtime2.rbxl");
+    cli_json(&["run", &f, "--duration", "1.2", "--step", "0.05", "--save-runtime", out2.to_str().unwrap()]);
+    let (done, _) = bloxcli::rbxio::read_place(&out2).expect("done runtime");
+    let menu_done = done.find_path("StarterGui/HUD/Menu").expect("menu done");
+    let done_y = match menu_done.properties.get("Position") { Some(bloxcli::tree::PropValue::UDim2(v)) => v[3], _ => panic!("done Position") };
+    assert!((done_y - 60.0).abs() < 1.0, "menu lands at goal: y={done_y}");
+}
