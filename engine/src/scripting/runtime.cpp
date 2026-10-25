@@ -392,6 +392,7 @@ void register_bindings(lua_State* L, Runtime* rt) {
     set_method(L, "blox_datastore_methods", "IncrementAsync", ds_increment_async);
     set_method(L, "blox_datastore_methods", "RemoveAsync", ds_remove_async);
     set_method(L, "blox_datastore_methods", "GetSortedAsync", ds_get_sorted);
+    make_metatable(L, "BloxDataStorePages", "DataStorePages", dsp_index);
     set_method(L, "blox_methods", "GetDataStore", m_datastore_get_store);
     set_method(L, "blox_methods", "GetOrderedDataStore", m_datastore_get_ordered);
     set_method(L, "blox_methods", "GetRequestBudgetForRequestType", m_datastore_budget);

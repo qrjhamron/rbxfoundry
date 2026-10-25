@@ -44,6 +44,14 @@ fn datatype_constructors_round_trip() {
         params.FilterDescendantsInstances = {part}
         params.MaxParts = 5
         print("overlap", params.MaxParts, params.FilterType.Name)
+        local ordered = game:GetService("DataStoreService"):GetOrderedDataStore("Scores")
+        ordered:SetAsync("a", 30); ordered:SetAsync("b", 10); ordered:SetAsync("c", 20)
+        local pages = ordered:GetSortedAsync(true, 2)
+        local page = pages:GetCurrentPage()
+        print("sorted", page[1].key, page[2].key, pages.IsFinished)
+        pages:AdvanceToNextPageAsync()
+        local page2 = pages:GetCurrentPage()
+        print("sorted2", page2[1].key, pages.IsFinished)
     "#]);
     let out = dir.join("out.rbxl");
     let run = cli_json(&["run", &f, "--duration", "0.05", "--save-runtime", out.to_str().unwrap()]);
@@ -51,6 +59,8 @@ fn datatype_constructors_round_trip() {
     assert!(logs.contains("ColorSequence"), "{logs}");
     assert!(logs.contains("range 0.5 9"), "{logs}");
     assert!(logs.contains("phys 2 0.9"), "{logs}");
+    assert!(logs.contains("sorted b c"), "{logs}");
+    assert!(logs.contains("sorted2 a true"), "{logs}");
     let (node, _) = bloxcli::rbxio::read_place(&out).expect("reopen");
     let part = node.find_path("Workspace/Typed").expect("part");
     match part.properties.get("CustomPhysicalProperties") {
@@ -61,4 +71,38 @@ fn datatype_constructors_round_trip() {
     }
     let grad = node.find_path("StarterGui/HUD/Panel/Grad").expect("gradient");
     assert!(grad.properties.contains_key("Color"), "gradient Color preserved: {:?}", grad.properties.keys().collect::<Vec<_>>());
+}
+
+#[test]
+fn wedge_collider_is_a_real_slope() {
+    // A ball dropped on a WedgePart must slide downhill (-Z here)
+    // instead of resting on a box top.
+    let dir = std::env::temp_dir().join(format!("bloxcli-gatec-wedge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("g.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    cli_ok(&["add", &f, "--parent", "Workspace", "--class", "WedgePart", "--name", "Ramp"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ramp", "--property", "Size", "--value", "20,10,20"]);
+    cli_ok(&["move", &f, "--target", "Workspace/Ramp", "--position", "0,5,0"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ramp", "--property", "Anchored", "--type", "Bool", "--value", "true"]);
+    cli_ok(&["add", &f, "--parent", "Workspace", "--class", "Part", "--name", "Ball"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ball", "--property", "Shape", "--type", "Enum", "--value", "0"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ball", "--property", "Size", "--value", "2,2,2"]);
+    cli_ok(&["move", &f, "--target", "Workspace/Ball", "--position", "0,14,4"]);
+    cli_ok(&["add", &f, "--parent", "ServerScriptService", "--class", "Script", "--name", "Watch"]);
+    cli_ok(&["set", &f, "--target", "ServerScriptService/Watch", "--property", "Source", "--type", "String", "--value",
+        "task.wait(2.5)\nlocal b = workspace.Ball\nprint(string.format('ball %.2f %.2f %.2f', b.Position.X, b.Position.Y, b.Position.Z))\n"]);
+    cli_json(&["play", "start", &f]);
+    cli_json(&["play", "step", &f, "--steps", "240"]);
+    let logs = cli_json(&["play", "logs", &f]);
+    cli_json(&["play", "stop", &f]);
+    let text = serde_json::to_string(&logs).unwrap();
+    let nums: Vec<f64> = text.split("ball ").nth(1).map(|s| s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter_map(|w| w.parse().ok()).collect()).unwrap_or_default();
+    assert!(nums.len() >= 3, "ball log: {text}");
+    let (y, z) = (nums[1], nums[2]);
+    // Box top would rest at y = 10 (wedge top) + 1 = 11 with z ~ 4.
+    // A real slope: the ball rolls toward -Z and loses height.
+    assert!(z < 1.0 && y < 9.5, "ball slid down the wedge slope: y={y} z={z}");
 }

@@ -88,6 +88,7 @@ const char* metatable_for(UKind kind) {
         case UKind::NumberRange: return "BloxNumberRange";
         case UKind::PhysProps: return "BloxPhysicalProperties";
         case UKind::OverlapParams: return "BloxOverlapParams";
+        case UKind::DataStorePages: return "BloxDataStorePages";
         default: return "BloxVector3";
     }
 }
@@ -3220,8 +3221,70 @@ int m_datastore_get_ordered(lua_State* L) {
     return n;
 }
 int ds_get_sorted(lua_State* L) {
-    luaL_error(L, "GetSortedAsync is not supported by the offline DataStore emulation");
-    return 0;
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    bool ascending = lua_toboolean(L, 2) != 0;
+    int page_size = static_cast<int>(luaL_optnumber(L, 3, 50));
+    if (page_size < 1) page_size = 1;
+    auto sit = rt->impl_->datastores.find(ds_store_key(L, 1));
+    std::vector<std::pair<std::string, double>> entries;
+    if (sit != rt->impl_->datastores.end()) {
+        for (const auto& [k, v] : sit->second) {
+            if (!v.is_number()) luaL_error(L, "OrderedDataStore values must be numbers (key '%s')", k.c_str());
+            entries.push_back({k, v.as_double()});
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [&](const auto& a, const auto& b2) {
+        return ascending ? a.second < b2.second : a.second > b2.second;
+    });
+    Json arr = Json::array();
+    for (const auto& [k, v] : entries) {
+        Json e = Json::object(); e.set("key", Json(k)); e.set("value", Json(v)); arr.push(std::move(e));
+    }
+    UData* u = new_box(L, UKind::DataStorePages, "BloxDataStorePages");
+    u->complex = std::move(arr);
+    u->n[0] = page_size;
+    u->n[1] = 0; // cursor (index of first unreturned entry)
+    return 1;
+}
+int dsp_index(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::DataStorePages, "DataStorePages");
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "GetCurrentPage") {
+        lua_pushvalue(L, 1);
+        lua_pushcclosure(L, [](lua_State* LL) -> int {
+            UData* pages = check_box(LL, lua_upvalueindex(1), UKind::DataStorePages, "DataStorePages");
+            lua_newtable(LL);
+            if (!pages->complex.is_array()) return 1;
+            int page_size = static_cast<int>(pages->n[0]);
+            int cursor = static_cast<int>(pages->n[1]);
+            const auto& arr = pages->complex.as_array();
+            int out = 1;
+            for (int i = cursor; i < static_cast<int>(arr.size()) && out <= page_size; ++i) {
+                lua_newtable(LL);
+                lua_pushstring(LL, arr[i].find("key")->as_string().c_str()); lua_setfield(LL, -2, "key");
+                lua_pushnumber(LL, arr[i].find("value")->as_double()); lua_setfield(LL, -2, "value");
+                lua_rawseti(LL, -2, out++);
+            }
+            return 1;
+        }, "GetCurrentPage", 1);
+        return 1;
+    }
+    if (key == "AdvanceToNextPageAsync") {
+        lua_pushvalue(L, 1);
+        lua_pushcclosure(L, [](lua_State* LL) -> int {
+            UData* pages = check_box(LL, lua_upvalueindex(1), UKind::DataStorePages, "DataStorePages");
+            pages->n[1] += pages->n[0];
+            return 0;
+        }, "AdvanceToNextPageAsync", 1);
+        return 1;
+    }
+    if (key == "IsFinished") {
+        bool done = !u->complex.is_array() || (u->n[1] + u->n[0]) >= static_cast<double>(u->complex.as_array().size());
+        lua_pushboolean(L, done);
+        return 1;
+    }
+    lua_pushnil(L); return 1;
 }
 int ds_index(lua_State* L) {
     std::string key = luaL_checkstring(L, 2);

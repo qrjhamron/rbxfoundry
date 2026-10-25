@@ -23,6 +23,7 @@
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -519,6 +520,17 @@ bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
         shape = new CylinderShape(static_cast<float>(size[0] / 2.0),
                                   static_cast<float>(std::min(size[1], size[2]) / 2.0));
         extra = Quat::sRotation(Vec3::sAxisZ(), -1.5707963f);
+    } else if (inst->class_name == "WedgePart" || inst->class_name == "CornerWedgePart") {
+        // True wedge collider (Gate C2): convex hull of the wedge prism
+        // (slope rising toward +Z, matching Roblox WedgePart geometry).
+        float hx = static_cast<float>(size[0] / 2), hy = static_cast<float>(size[1] / 2),
+              hz = static_cast<float>(size[2] / 2);
+        Vec3 points[6] = {
+            Vec3(-hx, -hy, -hz), Vec3(hx, -hy, -hz), Vec3(-hx, -hy, hz),
+            Vec3(hx, -hy, hz), Vec3(-hx, hy, hz), Vec3(hx, hy, hz),
+        };
+        auto hull = ConvexHullShapeSettings(points, 6).Create();
+        shape = hull.IsValid() ? hull.Get() : RefConst<Shape>(new BoxShape(Vec3(hx, hy, hz)));
     } else {
         shape = new BoxShape(Vec3(static_cast<float>(size[0] / 2), static_cast<float>(size[1] / 2),
                                   static_cast<float>(size[2] / 2)));

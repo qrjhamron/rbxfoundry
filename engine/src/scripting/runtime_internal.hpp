@@ -27,7 +27,7 @@ namespace blox {
 
 // ---------------------------------------------------------------- userdata --
 
-enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3, DataStore, ColorSequence, NumberSequence, NumberRange, PhysProps, OverlapParams };
+enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3, DataStore, ColorSequence, NumberSequence, NumberRange, PhysProps, OverlapParams, DataStorePages };
 
 struct SignalImpl;
 
@@ -393,6 +393,7 @@ int ds_update_async(lua_State* L);
 int ds_increment_async(lua_State* L);
 int ds_remove_async(lua_State* L);
 int ds_get_sorted(lua_State* L);
+int dsp_index(lua_State* L);
 int m_datastore_budget(lua_State* L);
 int m_http_json_encode(lua_State* L);
 int m_http_json_decode(lua_State* L);
