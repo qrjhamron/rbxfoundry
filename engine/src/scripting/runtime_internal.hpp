@@ -27,7 +27,7 @@ namespace blox {
 
 // ---------------------------------------------------------------- userdata --
 
-enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3, DataStore };
+enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3, DataStore, ColorSequence, NumberSequence, NumberRange, PhysProps, OverlapParams };
 
 struct SignalImpl;
 
@@ -44,6 +44,7 @@ struct UData {
     std::string s2; // EnumItem: item name
     Instance* inst = nullptr;
     SignalImpl* signal = nullptr;
+    Json complex; // sequence keypoints etc. for sequence kinds
     void* extra = nullptr; // TweenState* for UKind::Tween
     int64_t conn_id = 0;
     bool flag = false; // Connection: still connected
@@ -371,6 +372,19 @@ int m_terrain_read_voxels(lua_State* L);
 int m_text_service_get_text_size(lua_State* L);
 int fn_typeof(lua_State* L);
 int fn_tween_info_new(lua_State* L);
+int cs_new(lua_State* L);
+int ns_new(lua_State* L);
+int nr_new(lua_State* L);
+int pp_new(lua_State* L);
+int op_new(lua_State* L);
+int cs_keypoint_new(lua_State* L);
+int ns_keypoint_new(lua_State* L);
+int sequence_index(lua_State* L);
+int nr_index(lua_State* L);
+int pp_index(lua_State* L);
+int op_index(lua_State* L);
+int op_newindex(lua_State* L);
+void push_sequence(lua_State* L, UKind kind, const Json& complex);
 int m_datastore_get_store(lua_State* L);
 int m_datastore_get_ordered(lua_State* L);
 int ds_get_async(lua_State* L);

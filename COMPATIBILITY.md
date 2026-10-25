@@ -271,3 +271,19 @@ Studio comparison and none is claimed to be.
 
 Methodology: statuses are `INTERNAL_VERIFIED`/`PARTIAL`/`UNSUPPORTED` only;
 no Studio comparison was run for any row in this program (`UNTESTED`).
+
+## Compatibility Gap Closure (Gate A/B/C, verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| MCP filesystem sandbox (Gate A1) | INTERNAL_VERIFIED | Hardened resolver: `..` refused, symlink components resolved, absolute paths must be inside canonical root; adversarial tests (`security.rs`) incl. the reproduced `a/../../../` export escape |
+| Property type correctness (Gate A2) | INTERNAL_VERIFIED | Reflection-driven numeric conversion in DataModel::set_property; GUI reflection tables; Luau-created GUI round-trips with Int32/Float32 types (`gate_a.rs`) |
+| Physics body sync (Gate A3) | INTERNAL_VERIFIED | Signature-diff sync each step: spawn/destroy/reparent/teleport/rotation/size/anchored/terrain; velocity preserved; sleepers woken after support removal (`gate_a.rs`) |
+| Physics body identity/limits (Gate A4) | INTERNAL_VERIFIED | Instance->bodies vector (terrain voxels), explicit 4096 capacity via `skippedBodies`/`bodyLimitHit` |
+| Text grapheme clusters (27A) | PARTIAL | Combining marks/variation selectors zero-advance at cluster origin, ZWJ no-op; no HarfBuzz shaping (dev headers unavailable offline), no Arabic shaping or ligatures |
+| Tween CFrame rotation (27B) | INTERNAL_VERIFIED | Quaternion slerp in interpolate_variant (`gate_b.rs`) |
+| UIFlexItem (27C/27D) | PARTIAL | Grow/Shrink/Fill distribution in UIListLayout by ratio; no multi-line flex wrapping |
+| GUI input signals + wheel (27E) | PARTIAL | InputBegan/Changed/Ended, MouseMoved, button Down/Up, TouchTap exposed; wheel scrolls ScrollingFrame (`gate_b.rs`) |
+| Luau datatypes (Gate C1) | INTERNAL_VERIFIED | ColorSequence/NumberSequence(+Keypoints), NumberRange, PhysicalProperties.new, OverlapParams with bounds filtering (`gate_c.rs`) |
+| CSG / genuine Studio terrain chunks (Gate C3) | UNSUPPORTED | Unchanged: opaque preservation only, never faked |
+| Wedge/Mesh colliders, contact manifolds (Gate C2) | PARTIAL | Box approximations remain; documented, not parity |

@@ -376,6 +376,16 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_pop(L, 1);
     make_metatable(L, "BloxTween", "Tween", tween_index);
     make_metatable(L, "BloxDataStore", "DataStore", ds_index);
+    make_metatable(L, "BloxColorSequence", "ColorSequence", sequence_index);
+    make_metatable(L, "BloxNumberSequence", "NumberSequence", sequence_index);
+    make_metatable(L, "BloxNumberRange", "NumberRange", nr_index);
+    make_metatable(L, "BloxPhysicalProperties", "PhysicalProperties", pp_index);
+    // OverlapParams needs __newindex too: build manually below.
+    luaL_newmetatable(L, "BloxOverlapParams");
+    lua_pushstring(L, "OverlapParams"); lua_setfield(L, -2, "__type");
+    lua_pushcfunction(L, op_index, "op_index"); lua_setfield(L, -2, "__index");
+    lua_pushcfunction(L, op_newindex, "op_newindex"); lua_setfield(L, -2, "__newindex");
+    lua_pop(L, 1);
     set_method(L, "blox_datastore_methods", "GetAsync", ds_get_async);
     set_method(L, "blox_datastore_methods", "SetAsync", ds_set_async);
     set_method(L, "blox_datastore_methods", "UpdateAsync", ds_update_async);
@@ -595,6 +605,28 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_newtable(L);
     lua_pushcfunction(L, fn_tween_info_new, "new"); lua_setfield(L, -2, "new");
     lua_setglobal(L, "TweenInfo");
+
+    lua_newtable(L);
+    lua_pushcfunction(L, cs_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "ColorSequence");
+    lua_newtable(L);
+    lua_pushcfunction(L, cs_keypoint_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "ColorSequenceKeypoint");
+    lua_newtable(L);
+    lua_pushcfunction(L, ns_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "NumberSequence");
+    lua_newtable(L);
+    lua_pushcfunction(L, ns_keypoint_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "NumberSequenceKeypoint");
+    lua_newtable(L);
+    lua_pushcfunction(L, nr_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "NumberRange");
+    lua_newtable(L);
+    lua_pushcfunction(L, pp_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "PhysicalProperties");
+    lua_newtable(L);
+    lua_pushcfunction(L, op_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "OverlapParams");
 
     lua_newtable(L);
     lua_pushcfunction(L, task_wait, "wait"); lua_setfield(L, -2, "wait");

@@ -83,6 +83,11 @@ const char* metatable_for(UKind kind) {
         case UKind::UDim2: return "BloxUDim2";
         case UKind::EnumItem: return "BloxEnumItem";
         case UKind::Region3: return "BloxRegion3";
+        case UKind::ColorSequence: return "BloxColorSequence";
+        case UKind::NumberSequence: return "BloxNumberSequence";
+        case UKind::NumberRange: return "BloxNumberRange";
+        case UKind::PhysProps: return "BloxPhysicalProperties";
+        case UKind::OverlapParams: return "BloxOverlapParams";
         default: return "BloxVector3";
     }
 }
@@ -421,25 +426,19 @@ bool variant_to_lua(lua_State* L, Runtime* rt, const Variant& v, const std::stri
             return true;
         }
         case ValueType::ColorSequence: case ValueType::NumberSequence: {
-            lua_newtable(L);
+            push_sequence(L, v.type == ValueType::ColorSequence ? UKind::ColorSequence : UKind::NumberSequence, v.complex_value);
+            return true;
+        }
+        case ValueType::PhysicalProperties: {
+            UData* u = new_box(L, UKind::PhysProps, "BloxPhysicalProperties");
             if (v.complex_value.is_array()) {
-                int i = 1;
-                for (const Json& kp : v.complex_value.as_array()) {
-                    lua_newtable(L);
-                    lua_pushnumber(L, kp.find("time") ? kp.find("time")->as_double() : 0);
-                    lua_setfield(L, -2, "Time");
-                    if (v.type == ValueType::ColorSequence && kp.find("color")) {
-                        const auto& c = kp.find("color")->as_array();
-                        push_color3(L, c[0].as_double(), c[1].as_double(), c[2].as_double());
-                        lua_setfield(L, -2, "Color");
-                    } else {
-                        lua_pushnumber(L, kp.find("value") ? kp.find("value")->as_double() : 0);
-                        lua_setfield(L, -2, "Value");
-                        lua_pushnumber(L, kp.find("envelope") ? kp.find("envelope")->as_double() : 0);
-                        lua_setfield(L, -2, "Envelope");
-                    }
-                    lua_rawseti(L, -2, i++);
-                }
+                for (size_t i = 0; i < std::min<size_t>(5, v.complex_value.as_array().size()); ++i)
+                    u->n[i] = v.complex_value.as_array()[i].as_double();
+            } else if (v.complex_value.is_object()) {
+                u->n[0] = v.complex_value.find("density") ? v.complex_value.find("density")->as_double(1) : 1;
+                u->n[1] = v.complex_value.find("friction") ? v.complex_value.find("friction")->as_double(0.5) : 0.5;
+                u->n[2] = v.complex_value.find("elasticity") ? v.complex_value.find("elasticity")->as_double(0) : 0;
+                u->n[3] = 1; u->n[4] = 1;
             }
             return true;
         }
@@ -459,10 +458,10 @@ bool variant_to_lua(lua_State* L, Runtime* rt, const Variant& v, const std::stri
             return true;
         }
         case ValueType::NumberRange: {
-            lua_newtable(L);
+            UData* u = new_box(L, UKind::NumberRange, "BloxNumberRange");
             if (v.complex_value.is_array() && v.complex_value.as_array().size() == 2) {
-                lua_pushnumber(L, v.complex_value.as_array()[0].as_double()); lua_setfield(L, -2, "Min");
-                lua_pushnumber(L, v.complex_value.as_array()[1].as_double()); lua_setfield(L, -2, "Max");
+                u->n[0] = v.complex_value.as_array()[0].as_double();
+                u->n[1] = v.complex_value.as_array()[1].as_double();
             }
             return true;
         }
@@ -519,6 +518,28 @@ bool lua_to_variant(lua_State* L, int idx, ValueType type, Variant& out, std::st
                 auto* u = check_box(L, idx, UKind::EnumItem, "EnumItem");
                 out.int_value = static_cast<int64_t>(u->n[0]);
             }
+            return true;
+        }
+        case ValueType::ColorSequence: {
+            auto* u = check_box(L, idx, UKind::ColorSequence, "ColorSequence");
+            out.type = ValueType::ColorSequence; out.complex_value = u->complex; return true;
+        }
+        case ValueType::NumberSequence: {
+            auto* u = check_box(L, idx, UKind::NumberSequence, "NumberSequence");
+            out.type = ValueType::NumberSequence; out.complex_value = u->complex; return true;
+        }
+        case ValueType::NumberRange: {
+            auto* u = check_box(L, idx, UKind::NumberRange, "NumberRange");
+            out.type = ValueType::NumberRange;
+            out.complex_value = Json::array(); out.complex_value.push(Json(u->n[0])); out.complex_value.push(Json(u->n[1]));
+            return true;
+        }
+        case ValueType::PhysicalProperties: {
+            auto* u = check_box(L, idx, UKind::PhysProps, "PhysicalProperties");
+            out.type = ValueType::PhysicalProperties;
+            out.complex_value = Json::array();
+            for (int i = 0; i < 5; ++i) out.complex_value.push(Json(u->n[i]));
+            out.complex_value.push(Json(1.0)); // acoustic slot (array form)
             return true;
         }
         case ValueType::EnumItem: {
@@ -603,6 +624,11 @@ bool lua_to_variant_inferred(lua_State* L, int idx, Variant& out, std::string& e
             case UKind::UDim: return lua_to_variant(L, idx, ValueType::UDim, out, error);
             case UKind::UDim2: return lua_to_variant(L, idx, ValueType::UDim2, out, error);
             case UKind::EnumItem: return lua_to_variant(L, idx, ValueType::EnumItem, out, error);
+            case UKind::ColorSequence: case UKind::NumberSequence: case UKind::NumberRange:
+            case UKind::PhysProps:
+                return lua_to_variant(L, idx, u->kind == UKind::ColorSequence ? ValueType::ColorSequence
+                    : u->kind == UKind::NumberSequence ? ValueType::NumberSequence
+                    : u->kind == UKind::NumberRange ? ValueType::NumberRange : ValueType::PhysicalProperties, out, error);
             default: break;
         }
     }
@@ -1837,14 +1863,36 @@ int m_remote_invoke_server(lua_State* L) { return m_remote_invoke_impl(L, true);
 int m_remote_invoke_client(lua_State* L) { return m_remote_invoke_impl(L, false); }
 
 
+std::vector<Instance*> apply_overlap_filter(lua_State* L, int idx, std::vector<Instance*> hits) {
+    if (lua_isnoneornil(L, idx)) return hits;
+    UData* params = check_box(L, idx, UKind::OverlapParams, "OverlapParams");
+    std::set<Instance*> listed;
+    for (Instance* f : params->filter_list) {
+        std::vector<Instance*> stack{f};
+        while (!stack.empty()) {
+            Instance* cur = stack.back(); stack.pop_back();
+            listed.insert(cur);
+            for (const auto& c : cur->children) stack.push_back(c.get());
+        }
+    }
+    std::vector<Instance*> out;
+    for (Instance* hit : hits) {
+        bool in = listed.count(hit) > 0;
+        if (params->filter_type ? in : !in) out.push_back(hit);
+    }
+    if (params->n[0] > 0 && out.size() > static_cast<size_t>(params->n[0]))
+        out.resize(static_cast<size_t>(params->n[0]));
+    return out;
+}
+
 int m_workspace_get_parts_in_box(lua_State* L) {
     Runtime* rt = rt_of(L);
     if (!rt->impl_->physics)
         luaL_error(L, "Workspace:GetPartBoundsInBox is only available during physics-enabled play/net sessions");
     UData* cf = check_box(L, 2, UKind::CFrame, "CFrame");
     UData* size = check_box(L, 3, UKind::Vector3, "Vector3");
-    auto hits = rt->impl_->physics->parts_in_box(
-        {cf->n[0], cf->n[1], cf->n[2]}, {size->n[0], size->n[1], size->n[2]});
+    auto hits = apply_overlap_filter(L, 4, rt->impl_->physics->parts_in_box(
+        {cf->n[0], cf->n[1], cf->n[2]}, {size->n[0], size->n[1], size->n[2]}));
     lua_newtable(L);
     int i = 1;
     for (Instance* inst : hits) { push_instance(L, inst); lua_rawseti(L, -2, i++); }
@@ -1857,7 +1905,7 @@ int m_workspace_get_parts_in_radius(lua_State* L) {
         luaL_error(L, "Workspace:GetPartBoundsInRadius is only available during physics-enabled play/net sessions");
     UData* pos = check_box(L, 2, UKind::Vector3, "Vector3");
     double radius = luaL_checknumber(L, 3);
-    auto hits = rt->impl_->physics->parts_in_radius({pos->n[0], pos->n[1], pos->n[2]}, radius);
+    auto hits = apply_overlap_filter(L, 4, rt->impl_->physics->parts_in_radius({pos->n[0], pos->n[1], pos->n[2]}, radius));
     lua_newtable(L);
     int i = 1;
     for (Instance* inst : hits) { push_instance(L, inst); lua_rawseti(L, -2, i++); }
@@ -3220,6 +3268,183 @@ int m_http_generate_guid(lua_State* L) {
 int m_http_request(lua_State* L) {
     { Instance* self = check_instance(L, 1); if (self->class_name != "HttpService") luaL_error(L, "this method is only available on HttpService"); }
     luaL_error(L, "HttpService requests are disabled in RBXFoundry's offline mode (no outbound network access)");
+    return 0;
+}
+
+
+// ------------------------------------------- Luau datatypes (Gate C1) --
+void push_sequence(lua_State* L, UKind kind, const Json& complex) {
+    const char* mt = kind == UKind::ColorSequence ? "BloxColorSequence" : "BloxNumberSequence";
+    UData* u = new_box(L, kind, mt);
+    u->complex = complex;
+}
+static Json keypoints_from_table(lua_State* L, int idx, bool color) {
+    Json arr = Json::array();
+    if (!lua_istable(L, idx)) return arr;
+    int len = lua_objlen(L, idx);
+    for (int i = 1; i <= len; ++i) {
+        lua_rawgeti(L, idx, i);
+        if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+        Json kp = Json::object();
+        lua_getfield(L, -1, "Time");
+        kp.set("time", Json(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0));
+        lua_pop(L, 1);
+        if (color) {
+            lua_getfield(L, -1, "Value");
+            if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); lua_getfield(L, -1, "Color"); }
+            auto* c = lua_isuserdata(L, -1) ? check_box(L, -1, UKind::Color3, "Color3") : nullptr;
+            Json col = Json::array();
+            col.push(Json(c ? c->n[0] : 0.0)); col.push(Json(c ? c->n[1] : 0.0)); col.push(Json(c ? c->n[2] : 0.0));
+            kp.set("color", std::move(col));
+            lua_pop(L, 1);
+        } else {
+            lua_getfield(L, -1, "Value");
+            kp.set("value", Json(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "Envelope");
+            kp.set("envelope", Json(lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0));
+            lua_pop(L, 1);
+        }
+        arr.push(std::move(kp));
+        lua_pop(L, 1);
+    }
+    return arr;
+}
+int cs_keypoint_new(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, luaL_checknumber(L, 1)); lua_setfield(L, -2, "Time");
+    lua_pushvalue(L, 2); lua_setfield(L, -2, "Value");
+    return 1;
+}
+int ns_keypoint_new(lua_State* L) {
+    lua_newtable(L);
+    lua_pushnumber(L, luaL_checknumber(L, 1)); lua_setfield(L, -2, "Time");
+    lua_pushnumber(L, luaL_checknumber(L, 2)); lua_setfield(L, -2, "Value");
+    lua_pushnumber(L, luaL_optnumber(L, 3, 0)); lua_setfield(L, -2, "Envelope");
+    return 1;
+}
+int cs_new(lua_State* L) {
+    Json arr;
+    if (lua_istable(L, 1)) {
+        arr = keypoints_from_table(L, 1, true);
+    } else {
+        auto* c = check_box(L, 1, UKind::Color3, "Color3");
+        Json col = Json::array(); col.push(Json(c->n[0])); col.push(Json(c->n[1])); col.push(Json(c->n[2]));
+        arr = Json::array();
+        for (double tm : {0.0, 1.0}) { Json kp = Json::object(); kp.set("time", Json(tm)); kp.set("color", col); arr.push(kp); }
+    }
+    push_sequence(L, UKind::ColorSequence, arr);
+    return 1;
+}
+int ns_new(lua_State* L) {
+    Json arr;
+    if (lua_istable(L, 1)) {
+        arr = keypoints_from_table(L, 1, false);
+    } else {
+        double v = luaL_checknumber(L, 1);
+        arr = Json::array();
+        for (double tm : {0.0, 1.0}) { Json kp = Json::object(); kp.set("time", Json(tm)); kp.set("value", Json(v)); kp.set("envelope", Json(0.0)); arr.push(kp); }
+    }
+    push_sequence(L, UKind::NumberSequence, arr);
+    return 1;
+}
+int sequence_index(lua_State* L) {
+    UData* u = static_cast<UData*>(lua_touserdata(L, 1));
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "Keypoints") {
+        lua_newtable(L);
+        if (u->complex.is_array()) {
+            int i = 1;
+            for (const Json& kp : u->complex.as_array()) {
+                lua_newtable(L);
+                lua_pushnumber(L, kp.find("time") ? kp.find("time")->as_double() : 0); lua_setfield(L, -2, "Time");
+                if (u->kind == UKind::ColorSequence && kp.find("color")) {
+                    const auto& c = kp.find("color")->as_array();
+                    push_color3(L, c[0].as_double(), c[1].as_double(), c[2].as_double());
+                } else {
+                    lua_pushnumber(L, kp.find("value") ? kp.find("value")->as_double() : 0);
+                }
+                lua_setfield(L, -2, "Value");
+                if (u->kind == UKind::NumberSequence) {
+                    lua_pushnumber(L, kp.find("envelope") ? kp.find("envelope")->as_double() : 0);
+                    lua_setfield(L, -2, "Envelope");
+                }
+                lua_rawseti(L, -2, i++);
+            }
+        }
+        return 1;
+    }
+    lua_pushnil(L); return 1;
+}
+int nr_new(lua_State* L) {
+    UData* u = new_box(L, UKind::NumberRange, "BloxNumberRange");
+    u->n = {luaL_checknumber(L, 1), luaL_checknumber(L, 2), 0,0,0,0,0,0,0,0,0,0};
+    return 1;
+}
+int nr_index(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::NumberRange, "NumberRange");
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "Min") { lua_pushnumber(L, u->n[0]); return 1; }
+    if (key == "Max") { lua_pushnumber(L, u->n[1]); return 1; }
+    lua_pushnil(L); return 1;
+}
+int pp_new(lua_State* L) {
+    UData* u = new_box(L, UKind::PhysProps, "BloxPhysicalProperties");
+    u->n = {luaL_checknumber(L, 1), luaL_checknumber(L, 2), luaL_checknumber(L, 3),
+            luaL_optnumber(L, 4, 1), luaL_optnumber(L, 5, 1), 0,0,0,0,0,0,0};
+    return 1;
+}
+int pp_index(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::PhysProps, "PhysicalProperties");
+    std::string key = luaL_checkstring(L, 2);
+    const char* names[6] = {"Density", "Friction", "Elasticity", "FrictionWeight", "ElasticityWeight", "AcousticAbsorption"};
+    for (int i = 0; i < 5; ++i) if (key == names[i]) { lua_pushnumber(L, u->n[i]); return 1; }
+    lua_pushnil(L); return 1;
+}
+int op_new(lua_State* L) {
+    UData* u = new_box(L, UKind::OverlapParams, "BloxOverlapParams");
+    u->n[0] = 10000; // MaxParts default (large)
+    return 1;
+}
+int op_index(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::OverlapParams, "OverlapParams");
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "MaxParts") { lua_pushnumber(L, u->n[0]); return 1; }
+    if (key == "FilterType") { push_enum_item(L, "RaycastFilterType", u->filter_type ? "Include" : "Exclude", u->filter_type); return 1; }
+    if (key == "FilterDescendantsInstances") {
+        lua_newtable(L);
+        int i = 1;
+        for (Instance* inst : u->filter_list) { push_instance(L, inst); lua_rawseti(L, -2, i++); }
+        return 1;
+    }
+    if (key == "CollisionGroup") { lua_pushstring(L, u->s1.c_str()); return 1; }
+    lua_pushnil(L); return 1;
+}
+int op_newindex(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::OverlapParams, "OverlapParams");
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "MaxParts") { u->n[0] = luaL_checknumber(L, 3); return 0; }
+    if (key == "FilterType") {
+        auto* item = check_box(L, 3, UKind::EnumItem, "EnumItem");
+        u->filter_type = static_cast<int>(item->n[0]);
+        return 0;
+    }
+    if (key == "CollisionGroup") { u->s1 = luaL_checkstring(L, 3); return 0; }
+    if (key == "FilterDescendantsInstances") {
+        u->filter_list.clear();
+        if (lua_istable(L, 3)) {
+            int len = lua_objlen(L, 3);
+            for (int i = 1; i <= len; ++i) {
+                lua_rawgeti(L, 3, i);
+                if (lua_isuserdata(L, -1)) {
+                    auto* item = static_cast<UData*>(lua_touserdata(L, -1));
+                    if (item && item->kind == UKind::Instance && item->inst) u->filter_list.push_back(item->inst);
+                }
+                lua_pop(L, 1);
+            }
+        }
+        return 0;
+    }
     return 0;
 }
 
