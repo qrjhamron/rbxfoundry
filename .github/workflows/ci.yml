@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the pipeline only reads the repo and uploads
+# artifacts for its own run.
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libvulkan-dev libpng-dev libfreetype-dev glslang-tools \
+            mesa-vulkan-drivers fonts-dejavu-core pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Advisory for now: the codebase predates rustfmt enforcement, so
+      # these report but do not fail the pipeline yet.
+      - name: Format check (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets
+
+      - name: Build (C++ engine + Rust CLI)
+        run: ./scripts/build.sh
+
+      - name: Test (CTest + Cargo integration suites)
+        run: ./scripts/test.sh
+
+      - name: Package release tarball
+        run: ./scripts/package-release.sh
+
+      - name: Verify extracted standalone artifact
+        run: |
+          mkdir -p /tmp/artifact-check
+          tar -xzf dist/*.tar.gz -C /tmp/artifact-check
+          BIN="$(find /tmp/artifact-check -name bloxcli -type f | head -1)"
+          "${BIN}" --version
+          cd /tmp/artifact-check
+          "${BIN}" new smoke.rbxl
+          "${BIN}" render smoke.rbxl --output smoke.png --width 320 --height 240
+          test -s smoke.png
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rbxfoundry-linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
