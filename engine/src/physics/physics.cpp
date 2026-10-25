@@ -258,6 +258,7 @@ struct PhysicsWorld::Impl {
     // many bodies (Terrain voxels) but never silently overwrite.
     std::map<Instance*, std::vector<BodyID>> bodies;
     std::map<Instance*, uint64_t> body_signatures;
+    std::map<Instance*, std::array<double, 12>> body_transforms; // last physics-owned CFrame (pos+rot)
     size_t skipped_bodies = 0;
     bool body_limit_hit = false;
     uint64_t terrain_signature = 0;
@@ -490,14 +491,13 @@ uint64_t part_signature(Instance& inst) {
     Variant cf = cframe_of(inst);
     const Variant* phys = prop(inst, "CustomPhysicalProperties");
     const Variant* group = prop(inst, "CollisionGroup");
+    (void)cf; // CFrame is physics-owned for dynamic bodies; external
+    // teleports are detected against body_transforms, not the signature.
     char buf[640];
     std::snprintf(buf, sizeof(buf),
-        "%s|shape=%lld|size=%.4f,%.4f,%.4f|cf=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f|anch=%d|col=%d|grp=%s|phys=%s",
+        "%s|shape=%lld|size=%.4f,%.4f,%.4f|anch=%d|col=%d|grp=%s|phys=%s",
         inst.class_name.c_str(), (long long)prop_enum(inst, "Shape", 1),
         size[0], size[1], size[2],
-        cf.position[0], cf.position[1], cf.position[2],
-        cf.rotation[0], cf.rotation[1], cf.rotation[2], cf.rotation[3], cf.rotation[4],
-        cf.rotation[5], cf.rotation[6], cf.rotation[7], cf.rotation[8],
         prop_bool(inst, "Anchored", false) ? 1 : 0, prop_bool(inst, "CanCollide", true) ? 1 : 0,
         (group && group->type == ValueType::String) ? group->string_value.c_str() : "",
         phys ? phys->complex_value.dump().c_str() : "");
@@ -551,6 +551,9 @@ bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
     if (id.IsInvalid()) { im.skipped_bodies += 1; return false; }
     im.bodies[inst].push_back(id);
     im.by_id[id] = inst;
+    im.body_transforms[inst] = {cf.position[0], cf.position[1], cf.position[2],
+        cf.rotation[0], cf.rotation[1], cf.rotation[2], cf.rotation[3], cf.rotation[4],
+        cf.rotation[5], cf.rotation[6], cf.rotation[7], cf.rotation[8]};
     if (!anchored) {
         if (const Variant* v = prop(*inst, "AssemblyLinearVelocity")) {
             if (v->type == ValueType::Vector3)
@@ -582,6 +585,7 @@ void remove_instance_bodies(PhysicsWorld::Impl& im, Instance* inst) {
     }
     im.bodies.erase(it);
     im.body_signatures.erase(inst);
+    im.body_transforms.erase(inst);
 }
 
 uint64_t terrain_signature_of(DataModel& model, bool& present) {
@@ -744,6 +748,32 @@ void PhysicsWorld::sync_bodies() {
         if (!has) {
             if (create_part_body(im, inst)) im.body_signatures[inst] = sig;
         } else {
+            // External CFrame change (script/CLI teleport or rotation):
+            // compare against the last physics-owned transform.
+            auto tit = im.body_transforms.find(inst);
+            if (tit != im.body_transforms.end()) {
+                Variant cf = cframe_of(*inst);
+                double drift = 0;
+                const double cur[12] = {cf.position[0], cf.position[1], cf.position[2],
+                    cf.rotation[0], cf.rotation[1], cf.rotation[2], cf.rotation[3], cf.rotation[4],
+                    cf.rotation[5], cf.rotation[6], cf.rotation[7], cf.rotation[8]};
+                for (int i = 0; i < 12; ++i) drift = std::max(drift, std::abs(cur[i] - tit->second[i]));
+                if (drift > 0.01) {
+                    BodyInterface& bi = im.physics.GetBodyInterface();
+                    for (BodyID bid : it->second) {
+                        Vec3 pos; Quat rot;
+                        bi.GetPositionAndRotation(bid, pos, rot);
+                        // Only teleport when the body is not mid-flight
+                        // under physics ownership: dynamic bodies are
+                        // moved by SetPositionAndRotation too (Roblox
+                        // CFrame assignment teleports).
+                        bi.SetPositionAndRotation(bid, Vec3((float)cf.position[0], (float)cf.position[1], (float)cf.position[2]), quat_from_cframe(cf), EActivation::Activate);
+                        tit->second = {cf.position[0], cf.position[1], cf.position[2],
+                            cf.rotation[0], cf.rotation[1], cf.rotation[2], cf.rotation[3], cf.rotation[4],
+                            cf.rotation[5], cf.rotation[6], cf.rotation[7], cf.rotation[8]};
+                    }
+                }
+            }
             auto sit = im.body_signatures.find(inst);
             if (sit == im.body_signatures.end() || sit->second != sig) {
                 // Recreate (rotation/size/anchored/collision changed),
@@ -1349,6 +1379,12 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
             if (dx * dx + dy * dy + dz * dz > 1e-8) {
                 write_cframe(model_, *inst, pos, rot);
                 moved.push_back(inst);
+            }
+            {
+                Variant now = cframe_of(*inst);
+                im.body_transforms[inst] = {now.position[0], now.position[1], now.position[2],
+                    now.rotation[0], now.rotation[1], now.rotation[2], now.rotation[3], now.rotation[4],
+                    now.rotation[5], now.rotation[6], now.rotation[7], now.rotation[8]};
             }
         }
     }
