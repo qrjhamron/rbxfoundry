@@ -67,6 +67,11 @@ fn fix_ref_properties(
     for (name, target_path) in ref_props {
         let target_ref = if target_path.is_empty() {
             Ref::none()
+        } else if target_path == "." {
+            // Self-reference to the tree root (distinct from None).
+            *ref_map.get("").ok_or_else(|| {
+                crate::tree::Error("internal: no referent for the root".to_string())
+            })?
         } else if let Some(index_path) = resolve_name_ref(root, &target_path) {
             *ref_map.get(&index_path).ok_or_else(|| {
                 crate::tree::Error(format!(
@@ -261,6 +266,10 @@ fn variant_to_prop_ref(
             return Ok(PropValue::Ref(String::new()));
         }
         return match ref_paths.get(target) {
+            // The root's own path is "" (see collect_ref_paths); a
+            // reference to it is a distinct self-reference token, not
+            // None (which is the empty string).
+            Some(path) if path.is_empty() => Ok(PropValue::Ref(".".to_string())),
             Some(path) => Ok(PropValue::Ref(path.clone())),
             None => err(format!(
                 "property '{property}' on class '{class}' references an instance outside the place; refusing to drop it"

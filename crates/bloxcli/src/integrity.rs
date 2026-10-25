@@ -36,6 +36,9 @@ impl IntegrityIssue {
 /// from `root` (root itself is `[]`). Canonical refs are either
 /// `name:Service/Child/...` name paths or raw `0/2/1` index paths.
 pub fn ref_index_path(root: &Node, target: &str) -> Option<Vec<usize>> {
+    if target == "." {
+        return Some(Vec::new()); // self-reference to the root
+    }
     if let Some(rest) = target.strip_prefix("name:") {
         let mut cur = root;
         let mut path = Vec::new();

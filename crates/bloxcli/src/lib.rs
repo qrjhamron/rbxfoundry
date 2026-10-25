@@ -1,4 +1,5 @@
 pub mod convert;
+pub mod diff;
 pub mod engine;
 pub mod integrity;
 pub mod history;

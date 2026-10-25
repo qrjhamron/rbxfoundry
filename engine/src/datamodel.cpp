@@ -1,4 +1,5 @@
 #include "blox/datamodel.hpp"
+#include "blox/brickcolor.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -447,6 +448,25 @@ std::string DataModel::path_of(const Instance& inst) const {
     return out;
 }
 
+// Color and BrickColor are aliases of one colour in Roblox: setting
+// one updates the other (BrickColor snaps to the nearest palette
+// entry). Keep them consistent whenever both are stored.
+void sync_color_brick(Instance& inst, const std::string& property) {
+    auto color = inst.properties.find("Color");
+    auto brick = inst.properties.find("BrickColor");
+    if (color == inst.properties.end() || brick == inst.properties.end()) return;
+    if (color->second.type != ValueType::Color3 || brick->second.type != ValueType::BrickColor) return;
+    if (property == "Color") {
+        brick->second.int_value = nearest_brick_color(
+            static_cast<float>(color->second.vec3[0]) * 255.0f,
+            static_cast<float>(color->second.vec3[1]) * 255.0f,
+            static_cast<float>(color->second.vec3[2]) * 255.0f);
+    } else if (property == "BrickColor") {
+        auto rgb = brick_color_rgb(brick->second.int_value);
+        color->second.vec3 = {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
+    }
+}
+
 bool DataModel::set_property(Instance& inst, const std::string& property, const Variant& value, std::string& error) {
     if (property == "Name") {
         if (value.type != ValueType::String) { error = "Name must be a String"; return false; }
@@ -481,11 +501,13 @@ bool DataModel::set_property(Instance& inst, const std::string& property, const 
             coerced.type = it->second.type;
             inst.properties[property] = coerced;
             if (property == "CFrame") sync_position_from_cframe(inst);
+            sync_color_brick(inst, property);
             return true;
         }
     }
     inst.properties[property] = value;
     if (property == "CFrame") sync_position_from_cframe(inst);
+    sync_color_brick(inst, property);
     return true;
 }
 

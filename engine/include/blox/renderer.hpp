@@ -153,6 +153,21 @@ private:
 bool write_png(const std::string& path, uint32_t width, uint32_t height,
                const std::vector<uint8_t>& rgba, std::string& error);
 
+// Pixel-difference metrics between two PNGs (Phase 18, Parity Lab).
+struct ImageDiff {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    double mae = 0;        // mean absolute per-channel error, 0..255
+    double rmse = 0;       // root mean square per-channel error, 0..255
+    int max_delta = 0;     // largest per-channel difference
+    uint64_t diff_pixels = 0; // pixels with any channel different
+};
+
+// Compares two same-sized PNGs; optionally writes a heatmap PNG
+// (black = identical, brighter red = larger difference).
+bool image_diff(const std::string& path_a, const std::string& path_b,
+                const std::string& heatmap_path, ImageDiff& out, std::string& error);
+
 // sRGB (0..1, as stored in Color3 properties) to linear space.
 inline std::array<float, 3> srgb_to_linear(const std::array<float, 3>& c) {
     auto f = [](float v) {

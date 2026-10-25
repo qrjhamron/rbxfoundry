@@ -150,18 +150,18 @@ fn compatibility_suite() {
     assert!(format!("{}", server_script["properties"]["Source"]).contains("complex server online"));
     assert!(find_node(&after["tree"], "Terrain").is_some(), "terrain preserved");
     assert!(find_node(&after["tree"], "Ping").is_some(), "RemoteEvent preserved");
-    record("data.complex_roundtrip", "data", "VERIFIED",
+    record("data.complex_roundtrip", "data", "INTERNAL_VERIFIED",
            format!("{count_before} instances, attributes/refs/scripts/terrain intact rbxl->rbxlx->rbxl"));
 
     let validated = cli_json(&["validate", &f]);
-    record("data.validate", "data", "VERIFIED", format!("validate ok={}", validated["ok"]));
+    record("data.validate", "data", "INTERNAL_VERIFIED", format!("validate ok={}", validated["ok"]));
 
     // ---- runtime -------------------------------------------------------
     let run = cli_json(&["run", &f, "--duration", "0.3"]);
     let logs = format!("{}", run["logs"]);
     assert!(logs.contains("complex server online"), "{logs}");
     assert!(logs.contains("complex client online"), "{logs}");
-    record("runtime.scripts_both_contexts", "runtime", "VERIFIED",
+    record("runtime.scripts_both_contexts", "runtime", "INTERNAL_VERIFIED",
            "Script + LocalScript execute under `run`; 0 script errors".into());
     assert_eq!(run["errors"], serde_json::json!([]), "no runtime errors: {run}");
 
@@ -177,7 +177,7 @@ fn compatibility_suite() {
     let (r, g, b) = (0, 0, 0);
     let _ = (r, g, b);
     cli_ok(&["net", "stop", &f]);
-    record("net.two_clients", "runtime", "VERIFIED",
+    record("net.two_clients", "runtime", "INTERNAL_VERIFIED",
            "2 clients + server, isolated contexts, per-peer logs (full remote/latency coverage in tests/net.rs)".into());
 
     // ---- rendering -------------------------------------------------------
@@ -194,14 +194,14 @@ fn compatibility_suite() {
     let _ = sand;
     let bytes = std::fs::read(&shot).expect("png");
     assert!(bytes.len() > 1000 && &bytes[0..4] == b"\x89PNG");
-    record("visual.complex_render", "visual", "VERIFIED",
+    record("visual.complex_render", "visual", "INTERNAL_VERIFIED",
            format!("complex place renders ({} draw calls)", render["drawCalls"]));
     record("perf.render_800x600", "visual", "PARTIAL",
            format!("{render_ms} ms/frame on this machine (software Vulkan); no Studio baseline"));
 
     let ui = cli_json(&["ui", "render", &f, "--output", dir.join("hud.png").to_str().unwrap(), "--device", "mobile"]);
     assert_eq!(ui["ok"], true, "{ui}");
-    record("visual.ui_mobile", "visual", "VERIFIED", "StarterGui HUD rasterised at 390x844".into());
+    record("visual.ui_mobile", "visual", "INTERNAL_VERIFIED", "StarterGui HUD rasterised at 390x844".into());
 
     // ---- physics / animation quick gates (deep coverage elsewhere) -----
     cli_ok(&["play", "start", &f]);
@@ -213,7 +213,7 @@ fn compatibility_suite() {
     assert!(find_node(&anim_tree["tree"], "Right Shoulder").is_some(), "Motor6D rig present");
     assert!(find_node(&anim_tree["tree"], "Animator").is_some(), "Animator present");
     cli_ok(&["play", "stop", &f]);
-    record("physics.character_and_rig", "physics", "VERIFIED",
+    record("physics.character_and_rig", "physics", "INTERNAL_VERIFIED",
            "character grounded; R6 Motor6D rig + Animator in character model".into());
 
     // ---- phases 13-17 ---------------------------------------------------
@@ -231,20 +231,26 @@ fn compatibility_suite() {
     assert_eq!(model_export["rootClass"], "Model", "{model_export}");
     let model_inspect = cli_json(&["model", "inspect", model_file.to_str().unwrap()]);
     assert_eq!(model_inspect["name"], "House");
-    record("data.model_files", "data", "VERIFIED",
+    record("data.model_files", "data", "INTERNAL_VERIFIED",
            "single-root .rbxm export/inspect; .rbxm->place import + guard coverage in tests/phase17.rs".into());
 
-    record("data.export_integrity_guard", "data", "VERIFIED",
+    record("data.export_integrity_guard", "data", "INTERNAL_VERIFIED",
            "save/export blocked on dangling refs + corrupt BTR1 terrain; unresolved assets warn and are preserved (tests/phase17.rs)".into());
-    record("visual.rich_text", "visual", "VERIFIED",
+    record("visual.rich_text", "visual", "INTERNAL_VERIFIED",
            "RichText <b>/<i>/<u>/<font color>/<br> styled runs pixel-tested (tests/phase16.rs)".into());
-    record("visual.nine_slice", "visual", "VERIFIED",
+    record("visual.nine_slice", "visual", "INTERNAL_VERIFIED",
            "ImageLabel ScaleType=Slice nine-quads from SliceCenter x SliceScale, corners unscaled (tests/phase16.rs)".into());
-    record("runtime.context_action_service", "runtime", "VERIFIED",
+    record("runtime.context_action_service", "runtime", "INTERNAL_VERIFIED",
            "ContextActionService BindAction fires from play input (tests/phase14.rs)".into());
     record("runtime.pathfinding", "runtime", "PARTIAL",
            "PathfindingService grid A* routes around obstacles; no navmesh (tests/phase14.rs)".into());
-    record("physics.collision_groups", "physics", "VERIFIED",
+    record("parity.semantic_diff", "data", "INTERNAL_VERIFIED",
+           "blox diff: property-level DataModel diff incl. BrickColor/Color canonical equivalence (tests/phase18.rs)".into());
+    record("parity.image_diff", "visual", "INTERNAL_VERIFIED",
+           "blox imagediff: MAE/RMSE/diff-fraction metrics + heatmap PNGs from the engine (tests/phase18.rs)".into());
+    record("typography.unicode", "visual", "PARTIAL",
+           "UTF-8 codepoint text rendering + fallback chain + uncovered-codepoint warnings; no HarfBuzz shaping (unavailable offline), colour emoji drawn as coverage (tests/phase19.rs)".into());
+    record("physics.collision_groups", "physics", "INTERNAL_VERIFIED",
            "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)".into());
 
     // ---- known gaps (honest statuses) ----------------------------------
@@ -257,7 +263,7 @@ fn compatibility_suite() {
            "CharacterVirtual does not push dynamic bodies; collision blocking is verified".into());
 
     // ---- report ----------------------------------------------------------
-    let verified = checks.iter().filter(|c| c.status == "VERIFIED").count();
+    let verified = checks.iter().filter(|c| c.status == "INTERNAL_VERIFIED").count();
     let report = serde_json::json!({
         "suite": "bloxcli-compatibility",
         "generatedBy": "crates/bloxcli/tests/compat.rs",

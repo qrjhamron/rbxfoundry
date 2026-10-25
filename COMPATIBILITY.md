@@ -27,7 +27,7 @@ references, that is stated; nothing is claimed 1:1.
 | `.rbxl` write | Supported | Genuine binary: `<roblox!` header, INST/PROP/PRNT/END chunks. Verified byte-level in tests. |
 | `.rbxlx` read/write | Supported | Via `rbx_xml` 3.0.1. |
 | `.rbxl` <-> `.rbxlx` conversion | Supported | `export`; tree-equality tested both directions. |
-| `.rbxm`/`.rbxmx` model files | PARTIAL (internal tests) | Phase 17: `model export/inspect/import` for single-root subtrees. References inside the subtree are rewritten to relative index paths; references leaving the subtree (or pointing at the model root itself, which decodes as `None`) fail the export loudly. Multi-root model files are rejected. |
+| `.rbxm`/`.rbxmx` model files | PARTIAL (internal tests) | Phase 17: `model export/inspect/import` for single-root subtrees. References inside the subtree are rewritten to relative index paths; references leaving the subtree fail the export loudly. References to the model root itself use the canonical `.` self-reference token and round-trip (Phase 19). Multi-root model files are rejected. References to the DataModel root in *place* files cannot be stored (the root is not serialized) and remain canonical-only. |
 | DataModel root name | Not stored | Place files do not store it (upstream convention); reads synthesize `"Place"`. |
 | Unknown classes | Preserved | Kept verbatim; `validate` warns. Serializers may reject value types they cannot encode on unknown classes (e.g. `Attributes`) — that fails loudly. |
 | Unknown properties | Preserved | Kept verbatim; `validate` warns. |
@@ -149,7 +149,7 @@ DataModel copy and Luau context. MCP mirrors this as `net_*` tools.
 | SurfaceAppearance PBR | PARTIAL (internal tests) | ColorMap + NormalMap (derivative perturbation, no authored tangents) + RoughnessMap (G channel) + MetalnessMap (B channel) on MeshParts; missing maps reported by asset id, never faked. AlphaMode/transparency interplay approximate. |
 | Beam / Trail | PARTIAL (internal tests) | Beam renders as an oriented strip between Attachment0/1 world points with its first Color keypoint; Trail uses the same static strip (no motion-history ribbon). Texture/segments/curve unsupported. |
 | ParticleEmitter | PARTIAL (internal tests) | Deterministic billboard snapshot: Rate×Lifetime particles (cap 200) with seeded spread, first Size/Transparency/Color keypoints. No accumulation, velocity inheritance, rotation, or texture. |
-| TextService | PARTIAL (internal tests) | `TextService:GetTextSize` + `ui/textBounds` RPC use the GUI engine's FreeType measurement (DejaVu substitute — metrics differ from Roblox fonts); greedy word wrap. RichText subset (Phase 16, INTERNAL_VERIFIED): `<b> <i> <u> <font color>` + `<br>` render as styled runs with correct fonts/colours/underlines (pixel-tested); unsupported tags stripped. Text rasterisation is byte-oriented: non-ASCII (e.g. em-dash, emoji) renders incorrectly. |
+| TextService | PARTIAL (internal tests) | `TextService:GetTextSize` + `ui/textBounds` RPC use the GUI engine's FreeType measurement (DejaVu substitute — metrics differ from Roblox fonts); greedy word wrap. RichText subset (Phase 16, INTERNAL_VERIFIED): `<b> <i> <u> <font color>` + `<br>` render as styled runs with correct fonts/colours/underlines (pixel-tested); unsupported tags stripped. Phase 19: text is decoded as UTF-8 codepoints with a per-codepoint font fallback chain; codepoints no installed font covers draw as .notdef boxes and are reported in render warnings (never silently dropped). No HarfBuzz shaping (unavailable offline): combining marks and complex scripts are not shaped, and colour emoji render as alpha coverage in the text colour. |
 | Skinning | UNSUPPORTED | Mesh v5 envelopes still skipped with an explicit warning; character animation is joint-transform based, not skinned. |
 
 ## Compatibility suite (Phase 12)
@@ -187,6 +187,20 @@ Studio comparison and none is claimed to be.
 | Export integrity guard | INTERNAL_VERIFIED | `integrity.rs` runs in `save`/`export`/`model` writes and reports in `validate` (`integrity` JSON summary, `integrityWarnings` on export). Errors block the write before any file is touched: dangling references, corrupted `BloxVoxels` (BTR1) terrain payloads, instance references inside Attributes. Warnings do not block: unresolved `rbxassetid://` content (preserved verbatim), scripts without Source, duplicate sibling names |
 | XML undefined referents | INTERNAL_VERIFIED | `rbx_xml` silently decodes a `<Ref>` to an undefined referent as `None`; `read_place`/`read_model` pre-scan XML text and refuse such files loudly |
 | `.rbxm`/`.rbxmx` models | INTERNAL_VERIFIED | See Place files table. `phase17.rs`: export->inspect->import round trip keeps PrimaryPart resolving; external references rejected |
+
+## Phase 18-20 additions (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Semantic DataModel diff (`blox diff`) | INTERNAL_VERIFIED | Property-level diff of two places/models; tolerates serializer coercions (Float32/64, Color3 quantization, canonical BrickColor->Color) while flagging real changes (`phase18.rs`) |
+| Image diff (`blox imagediff`) | INTERNAL_VERIFIED | Engine-computed MAE/RMSE/max-delta/diff-fraction + heatmap PNG; used for screenshot regression |
+| Template-vs-fixture compare | INTERNAL_VERIFIED (tooling) | `template compare <fixture> --template baseplate` produces the semantic diff above. Comparing against a genuine Studio Baseplate remains UNTESTED: no Studio fixture is available in this environment |
+| Unicode text (UTF-8) | PARTIAL | Codepoint decoding/measurement/rasterization, CJK line breaking, fallback chain, uncovered-codepoint warnings (`phase19.rs`, `screenshots/unicode-text.png`). HarfBuzz shaping unavailable offline; no CJK font installed here, so CJK draws as reported .notdef boxes |
+| Color<->BrickColor sync | INTERNAL_VERIFIED | Engine keeps the two aliases consistent (full 208-colour palette in `engine/include/blox/brickcolor.hpp`, generated from rbx_types data); setting Color snaps BrickColor to the nearest palette entry |
+| Model-root self-references (`.`) | INTERNAL_VERIFIED | Canonical `.` token distinct from None; survives model export/inspect/import round trips (`phase19.rs`) |
+| Place sidecar manifest | INTERNAL_VERIFIED | `place manifest` writes `<file>.manifest.json` with offline metadata/integrity summary; nothing is injected into the genuine `.rbxl` (`phase19.rs`) |
+| Release packaging | INTERNAL_VERIFIED | `scripts/package-release.sh` builds a self-contained tarball (release binaries, bundled DejaVu fonts, examples); `.github/workflows/ci.yml` builds+tests+packages on Ubuntu. Verified by extracting the tarball and rendering with it |
+| Benchmarks | INTERNAL_VERIFIED | `scripts/bench.sh`; results in `docs/BENCHMARKS.md` (machine-specific, software Vulkan) |
 
 ## Tooling
 

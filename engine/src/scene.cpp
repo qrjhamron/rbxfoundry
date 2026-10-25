@@ -1,4 +1,5 @@
 #include "blox/scene.hpp"
+#include "blox/brickcolor.hpp"
 #include "blox/terrain.hpp"
 
 #include <filesystem>
@@ -93,32 +94,15 @@ std::string prop_string(const Instance& inst, const char* name) {
     return "";
 }
 
-// Subset of the BrickColor palette (sRGB bytes) for parts that carry only a
-// BrickColor. Files normally store Color as well, which takes precedence.
-const std::map<int64_t, std::array<float, 3>>& brick_palette() {
-    static const std::map<int64_t, std::array<float, 3>> palette = {
-        {1, {242, 243, 243}}, {5, {215, 197, 154}}, {11, {128, 187, 219}},
-        {18, {204, 142, 105}}, {21, {196, 40, 28}}, {23, {13, 105, 172}},
-        {24, {245, 205, 48}}, {26, {27, 42, 53}}, {28, {40, 127, 71}},
-        {29, {161, 196, 140}}, {37, {218, 133, 65}}, {38, {99, 95, 98}},
-        {45, {180, 210, 228}}, {101, {110, 153, 202}}, {119, {164, 189, 71}},
-        {141, {39, 70, 44}}, {151, {120, 144, 130}}, {192, {104, 64, 50}},
-        {194, {163, 162, 165}}, {208, {226, 220, 188}}, {217, {124, 92, 70}},
-    };
-    return palette;
-}
-
+// BrickColor palette shared with the DataModel (brickcolor.hpp).
 std::array<float, 3> part_color_srgb(const Instance& inst) {
     const Variant* c = prop(inst, "Color");
     if (c && c->type == ValueType::Color3)
         return {static_cast<float>(c->vec3[0]), static_cast<float>(c->vec3[1]), static_cast<float>(c->vec3[2])};
     const Variant* b = prop(inst, "BrickColor");
     if (b && b->type == ValueType::BrickColor) {
-        auto it = brick_palette().find(b->int_value);
-        if (it != brick_palette().end()) {
-            auto rgb = it->second;
-            return {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
-        }
+        auto rgb = brick_color_rgb(b->int_value);
+        return {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
     }
     return {0.64f, 0.64f, 0.65f};
 }

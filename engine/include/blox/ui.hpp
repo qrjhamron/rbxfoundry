@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -110,7 +111,7 @@ struct TextJob {
 };
 bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads,
                     std::vector<uint8_t>& atlas_rgba, uint32_t& atlas_w, uint32_t& atlas_h,
-                    std::string& error);
+                    std::string& error, std::set<char32_t>* missing_out = nullptr);
 // Measures text width in pixels for wrapping/layout (same font path rules).
 float measure_text(const std::string& text, float size_px, const std::string& font_path);
 

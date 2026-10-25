@@ -1106,6 +1106,50 @@ bool write_png(const std::string& path, uint32_t width, uint32_t height,
     return true;
 }
 
+bool image_diff(const std::string& path_a, const std::string& path_b,
+                const std::string& heatmap_path, ImageDiff& out, std::string& error) {
+    uint32_t wa = 0, ha = 0, wb = 0, hb = 0;
+    std::vector<uint8_t> a, b;
+    if (!load_png_rgba(path_a, wa, ha, a, error)) return false;
+    if (!load_png_rgba(path_b, wb, hb, b, error)) return false;
+    if (wa != wb || ha != hb) {
+        error = "image sizes differ: " + std::to_string(wa) + "x" + std::to_string(ha) + " vs " +
+                std::to_string(wb) + "x" + std::to_string(hb);
+        return false;
+    }
+    out.width = wa;
+    out.height = ha;
+    out.diff_pixels = 0;
+    out.max_delta = 0;
+    double sum_abs = 0;
+    double sum_sq = 0;
+    const size_t pixels = static_cast<size_t>(wa) * ha;
+    std::vector<uint8_t> heat;
+    if (!heatmap_path.empty()) heat.assign(pixels * 4, 0);
+    for (size_t i = 0; i < pixels; ++i) {
+        int pixel_max = 0;
+        for (int c = 0; c < 4; ++c) {
+            int d = std::abs(static_cast<int>(a[i * 4 + c]) - static_cast<int>(b[i * 4 + c]));
+            sum_abs += d;
+            sum_sq += static_cast<double>(d) * d;
+            pixel_max = std::max(pixel_max, d);
+        }
+        if (pixel_max > 0) ++out.diff_pixels;
+        out.max_delta = std::max(out.max_delta, pixel_max);
+        if (!heat.empty()) {
+            heat[i * 4 + 0] = static_cast<uint8_t>(pixel_max);
+            heat[i * 4 + 1] = static_cast<uint8_t>(pixel_max / 4);
+            heat[i * 4 + 2] = 0;
+            heat[i * 4 + 3] = 255;
+        }
+    }
+    const double channels = static_cast<double>(pixels) * 4.0;
+    out.mae = channels > 0 ? sum_abs / channels : 0;
+    out.rmse = channels > 0 ? std::sqrt(sum_sq / channels) : 0;
+    if (!heatmap_path.empty() && !write_png(heatmap_path, wa, ha, heat, error)) return false;
+    return true;
+}
+
 } // namespace blox
 
 // ===================== UI pipeline (Phase 4) =====================

@@ -4,35 +4,35 @@
       "area": "data",
       "evidence": "23 instances, attributes/refs/scripts/terrain intact rbxl->rbxlx->rbxl",
       "id": "data.complex_roundtrip",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "data",
       "evidence": "validate ok=true",
       "id": "data.validate",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "runtime",
       "evidence": "Script + LocalScript execute under `run`; 0 script errors",
       "id": "runtime.scripts_both_contexts",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "runtime",
       "evidence": "2 clients + server, isolated contexts, per-peer logs (full remote/latency coverage in tests/net.rs)",
       "id": "net.two_clients",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "visual",
       "evidence": "complex place renders (10 draw calls)",
       "id": "visual.complex_render",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "visual",
-      "evidence": "305 ms/frame on this machine (software Vulkan); no Studio baseline",
+      "evidence": "308 ms/frame on this machine (software Vulkan); no Studio baseline",
       "id": "perf.render_800x600",
       "status": "PARTIAL"
     },
@@ -40,13 +40,13 @@
       "area": "visual",
       "evidence": "StarterGui HUD rasterised at 390x844",
       "id": "visual.ui_mobile",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "physics",
       "evidence": "character grounded; R6 Motor6D rig + Animator in character model",
       "id": "physics.character_and_rig",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "data",
@@ -58,31 +58,31 @@
       "area": "data",
       "evidence": "single-root .rbxm export/inspect; .rbxm->place import + guard coverage in tests/phase17.rs",
       "id": "data.model_files",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "data",
       "evidence": "save/export blocked on dangling refs + corrupt BTR1 terrain; unresolved assets warn and are preserved (tests/phase17.rs)",
       "id": "data.export_integrity_guard",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "visual",
       "evidence": "RichText <b>/<i>/<u>/<font color>/<br> styled runs pixel-tested (tests/phase16.rs)",
       "id": "visual.rich_text",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "visual",
       "evidence": "ImageLabel ScaleType=Slice nine-quads from SliceCenter x SliceScale, corners unscaled (tests/phase16.rs)",
       "id": "visual.nine_slice",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "runtime",
       "evidence": "ContextActionService BindAction fires from play input (tests/phase14.rs)",
       "id": "runtime.context_action_service",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "runtime",
@@ -91,10 +91,28 @@
       "status": "PARTIAL"
     },
     {
+      "area": "data",
+      "evidence": "blox diff: property-level DataModel diff incl. BrickColor/Color canonical equivalence (tests/phase18.rs)",
+      "id": "parity.semantic_diff",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "blox imagediff: MAE/RMSE/diff-fraction metrics + heatmap PNGs from the engine (tests/phase18.rs)",
+      "id": "parity.image_diff",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "UTF-8 codepoint text rendering + fallback chain + uncovered-codepoint warnings; no HarfBuzz shaping (unavailable offline), colour emoji drawn as coverage (tests/phase19.rs)",
+      "id": "typography.unicode",
+      "status": "PARTIAL"
+    },
+    {
       "area": "physics",
       "evidence": "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)",
       "id": "physics.collision_groups",
-      "status": "VERIFIED"
+      "status": "INTERNAL_VERIFIED"
     },
     {
       "area": "data",
@@ -125,10 +143,10 @@
   "note": "VERIFIED means an internal automated check passes. No Roblox Studio reference data was available; nothing here is a Studio comparison.",
   "suite": "bloxcli-compatibility",
   "summary": {
-    "partial": 3,
-    "total": 20,
+    "partial": 4,
+    "total": 23,
     "unsupported": 3,
     "untested": 1,
-    "verified": 13
+    "verified": 15
   }
 }

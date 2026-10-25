@@ -75,7 +75,10 @@ pub enum PropValue {
         enum_type: String,
         value: u32,
     },
-    /// Child-index path of the target instance ("0/2/1"); "" means none.
+    /// Child-index path of the target instance ("0/2/1"); "" means
+    /// none; "." is a self-reference to the tree root (serializable in
+    /// model files, whose root is stored; in place files the DataModel
+    /// root is not stored, so "." only survives canonical round trips).
     Ref(String),
     Font {
         family: String,

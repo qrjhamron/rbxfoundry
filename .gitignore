@@ -9,3 +9,7 @@
 *.bloxnet/
 *.bloxhistory/
 .blox-surface-*.png
+
+# Release artifacts
+dist/
+*.tar.gz

@@ -3,7 +3,7 @@
 A native Linux, CLI-only, offline-first Roblox Studio alternative designed
 for AI coding agents.
 
-> **Status: Phases 1–6, 8–16 implemented** (Phase 7, browser play, is
+> **Status: v0.2.0-beta.1; Phases 1–6, 8–20 implemented** (Phase 7, browser play, is
 > intentionally skipped). Editing core, place templates, real headless
 > Vulkan rendering, a Roblox GUI engine with RichText and nine-slice
 > images, an **MCP server** for AI agents, the **official Luau runtime**,
@@ -104,6 +104,27 @@ The CLI finds the engine via `--engine <path>`, `$BLOX_ENGINE`, a
 The same binary is also installed as `blox`, so `blox get …` works as
 written in the command list.
 
+## Install (release tarball)
+
+Download/extract the Linux tarball (built by `scripts/package-release.sh`,
+also produced by CI), then:
+
+```bash
+tar -xzf rbxfoundry-0.2.0-beta.1-linux-x86_64.tar.gz
+cd rbxfoundry-0.2.0-beta.1-linux-x86_64
+./bin/bloxcli --version
+./bin/bloxcli new myplace.rbxl --template baseplate
+./bin/bloxcli render myplace.rbxl --output scene.png
+```
+
+The tarball is self-contained: release binaries plus bundled DejaVu
+fonts under `bin/fonts/` (the engine also honours `$BLOX_FONT` and
+`ui render --font <path>`). A Vulkan driver is still required for
+rendering (Mesa Lavapipe works without a GPU). See
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) and
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md). Examples:
+[examples/README.md](examples/README.md).
+
 ## Usage
 
 ```bash
@@ -145,6 +166,12 @@ Commands:
 | `save <file>` | Loads, engine-validates, canonically rewrites. Refuses an invalid tree. |
 | `export <in> <out> [--force]` | Converts `.rbxl` <-> `.rbxlx` (or re-encodes the same format). |
 | `validate <file>` | Full decode + engine validation + reflection-database type validation. Exit 1 when invalid. |
+| `diff <a> <b>` | Semantic, property-level DataModel diff of two places/models (Phase 18). Exit 1 when differences exist. |
+| `imagediff <a.png> <b.png> [--heatmap H] [--tolerance F]` | Pixel metrics (MAE/RMSE/diff fraction) + optional heatmap (Phase 18). |
+| `model export|inspect|import` | Single-root `.rbxm`/`.rbxmx` handling (Phase 17/19). |
+| `place info|manifest <file>` | Place summary / offline sidecar manifest (`.manifest.json`). |
+| `template list|inspect|compare` | Template registry; `compare` diffs a template against a supplied fixture file. |
+| `parity dashboard` | Static HTML compatibility dashboard from `compat-report.json`. |
 | `get <file> --target P [--property N]` | One instance (referent, properties, children) or one typed property. `Position`, `Name`, `ClassName` derived. |
 | `tree <file> [--path P] [--depth N] [--props]` | Hierarchy with stable referents (`#id`). |
 | `find <file> [--name N] [--class C] [--under P] [--contains]` | Search by exact/substring name and/or class. |

@@ -18,7 +18,7 @@
 namespace {
 
 constexpr const char* kProtocolVersion = "1";
-constexpr const char* kEngineVersion = "0.1.0";
+constexpr const char* kEngineVersion = "0.2.0-beta.1";
 
 using blox::DataModel;
 using blox::Instance;
@@ -220,6 +220,30 @@ int main(int argc, char** argv) {
         }
         if (!initialized) { respond_error(-32001, "not initialized: call 'initialize' first"); continue; }
         if (method == "ping") { respond(Json("pong")); continue; }
+
+        if (method == "parity/imagediff") {
+            auto str_param = [&](const char* key) -> std::string {
+                const Json* v = params.find(key);
+                return v && v->is_string() ? v->as_string() : std::string();
+            };
+            blox::ImageDiff diff;
+            std::string diff_error;
+            if (!blox::image_diff(str_param("a"), str_param("b"), str_param("heatmap"), diff, diff_error)) {
+                respond_error(-32002, diff_error);
+                continue;
+            }
+            Json result = Json::object();
+            result.set("width", Json(static_cast<int64_t>(diff.width)));
+            result.set("height", Json(static_cast<int64_t>(diff.height)));
+            result.set("mae", Json(diff.mae));
+            result.set("rmse", Json(diff.rmse));
+            result.set("maxDelta", Json(static_cast<int64_t>(diff.max_delta)));
+            result.set("diffPixels", Json(static_cast<int64_t>(diff.diff_pixels)));
+            const double total = static_cast<double>(diff.width) * diff.height;
+            result.set("diffFraction", Json(total > 0 ? diff.diff_pixels / total : 0.0));
+            respond(std::move(result));
+            continue;
+        }
 
         if (method == "datamodel/new") {
             std::string name = "Place";

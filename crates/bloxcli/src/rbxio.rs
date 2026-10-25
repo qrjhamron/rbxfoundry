@@ -137,10 +137,14 @@ pub fn read_model(path: &Path) -> Result<(Node, PlaceFormat)> {
     // level so they are relative to the model root. A reference to the
     // model root itself ("0") becomes "" (None) — see COMPATIBILITY.md.
     shift_refs(&mut model, &|target| {
-        target
-            .strip_prefix("0/")
-            .map(|rest| rest.to_string())
-            .unwrap_or_default()
+        if target == "0" {
+            ".".to_string() // reference to the model root itself
+        } else {
+            target
+                .strip_prefix("0/")
+                .map(|rest| rest.to_string())
+                .unwrap_or_default()
+        }
     });
     Ok((model, format))
 }
@@ -152,7 +156,13 @@ pub fn write_model(path: &Path, node: &Node) -> Result<PlaceFormat> {
     // Encode under a synthetic wrapper so the on-disk roots are exactly
     // the model subtree; shift model-relative refs one level down.
     let mut model = node.clone();
-    shift_refs(&mut model, &|target| format!("0/{target}"));
+    shift_refs(&mut model, &|target| {
+        if target == "." {
+            "0".to_string() // model root in wrapper coordinates
+        } else {
+            format!("0/{target}")
+        }
+    });
     let mut wrapper = Node::new("DataModel", "");
     wrapper.children.push(model);
     let bytes = node_to_bytes(&wrapper, format)?;
