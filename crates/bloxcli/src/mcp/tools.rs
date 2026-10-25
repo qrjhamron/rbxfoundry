@@ -326,6 +326,36 @@ impl McpServer {
                 self.reload_open()?;
                 text(json!({"redo": outcome, "canUndo": history.can_undo(), "canRedo": history.can_redo()}))
             }
+            "studio_session_start" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::start_daemon(&self.engine_path, &place, bool_arg(args, "force"))?;
+                text(state)
+            }
+            "studio_session_status" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::send_request(&place, &json!({"cmd": "status"}))?;
+                text(state)
+            }
+            "studio_session_get" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::send_request(&place, &json!({"cmd": "get", "target": str_arg(args, "target")?}))?;
+                text(state)
+            }
+            "studio_session_set" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::send_request(&place, &json!({"cmd": "set", "target": str_arg(args, "target")?, "property": str_arg(args, "property")?, "value": args.get("value").cloned().ok_or_else(|| Error("set needs value".into()))?}))?;
+                text(state)
+            }
+            "studio_session_save" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::send_request(&place, &json!({"cmd": "save", "force": bool_arg(args, "force")}))?;
+                text(state)
+            }
+            "studio_session_stop" => {
+                let place = self.sandbox_path(str_arg(args, "path")?)?;
+                let state = crate::session::studio::send_request(&place, &json!({"cmd": "stop", "save": bool_arg(args, "save")}))?;
+                text(state)
+            }
             other => err(format!("unknown tool '{other}'")),
         }
     }

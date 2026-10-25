@@ -22,6 +22,12 @@ const PATH_PROP: &str = "\"path\": {\"type\": \"string\", \"description\": \"Pla
 pub fn tool_definitions() -> Vec<JsonValue> {
     let path_only = serde_json::from_str::<JsonValue>(&format!("{{{PATH_PROP}}}")).unwrap();
     vec![
+        tool("studio_session_start", "Start a persistent Studio session daemon for a place (Phase 25); CLI attaches to the same engine state.", schema(path_only.clone(), &["path"])),
+        tool("studio_session_status", "Status of the persistent Studio session for a place.", schema(path_only.clone(), &["path"])),
+        tool("studio_session_get", "Get an instance from the persistent Studio session (same state the CLI sees).", schema(serde_json::from_str::<JsonValue>(&format!("{{{PATH_PROP}, \"target\": {{\"type\": \"string\"}}}}")).unwrap(), &["path", "target"])),
+        tool("studio_session_set", "Set a property in the persistent Studio session (unsaved until studio_session_save).", schema(serde_json::from_str::<JsonValue>(&format!("{{{PATH_PROP}, \"target\": {{\"type\": \"string\"}}, \"property\": {{\"type\": \"string\"}}, \"value\": {{}}}}")).unwrap(), &["path", "target", "property", "value"])),
+        tool("studio_session_save", "Explicitly save the persistent Studio session to its place file.", schema(path_only.clone(), &["path"])),
+        tool("studio_session_stop", "Stop the persistent Studio session for a place.", schema(path_only.clone(), &["path"])),
         tool("studio_open", "Open an existing .rbxl/.rbxlx place (inside the MCP project root) into the persistent engine session.", schema(path_only.clone(), &["path"])),
         tool("studio_new", "Create a new place with the standard Roblox service set and save it.", schema(
             serde_json::from_str::<JsonValue>(&format!("{{{PATH_PROP}, \"name\": {{\"type\": \"string\"}}, \"force\": {{\"type\": \"boolean\"}}}}")).unwrap(), &["path"])),

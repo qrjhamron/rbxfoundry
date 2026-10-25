@@ -6,7 +6,7 @@ pub mod args;
 
 use std::process::ExitCode;
 use crate::protocol::tree::Result;
-use crate::commands::{editing, model, place, render, runtime, sessions, terrain, transform};
+use crate::commands::{editing, model, place, render, runtime, sessions, studio, terrain, transform};
 
 pub fn run_main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,6 +54,8 @@ pub fn run(args: &[String]) -> Result<()> {
     };
     let cmd_args = &rest[1..];
     match command.as_str() {
+        "studio" => studio::cmd_studio(&global, cmd_args),
+        "studio-daemon" => studio::cmd_studio_daemon(&global, cmd_args),
         "mcp" => sessions::cmd_mcp(&global, cmd_args),
         "run" => runtime::cmd_run(&global, cmd_args),
         "play" => sessions::cmd_play(&global, cmd_args),
