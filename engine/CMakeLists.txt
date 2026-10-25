@@ -88,7 +88,7 @@ target_include_directories(blox_rendering PUBLIC include PRIVATE ${CMAKE_CURRENT
 target_compile_features(blox_rendering PUBLIC cxx_std_20)
 target_link_libraries(blox_rendering PUBLIC blox_datamodel blox_terrain blox_gui Vulkan::Vulkan PNG::PNG)
 
-add_library(blox_scripting STATIC src/scripting/runtime.cpp src/scripting/script_tools.cpp)
+add_library(blox_scripting STATIC src/scripting/runtime.cpp src/scripting/bindings.cpp src/scripting/script_tools.cpp)
 target_include_directories(blox_scripting PUBLIC include PRIVATE src/scripting)
 target_compile_features(blox_scripting PUBLIC cxx_std_20)
 target_link_libraries(blox_scripting PUBLIC blox_datamodel blox_physics blox_terrain blox_gui Luau.Compiler Luau.VM Luau.Analysis)
