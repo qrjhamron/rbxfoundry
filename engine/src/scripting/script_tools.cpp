@@ -1,7 +1,7 @@
 // Luau language tooling bridge (Phase 23): runs the official Luau
 // Frontend (parser + new type solver + linter) over in-memory source.
 
-#include "blox/script_tools.hpp"
+#include "blox/scripting/script_tools.hpp"
 
 #include "Luau/ConfigResolver.h"
 #include "Luau/Error.h"

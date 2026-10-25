@@ -5,8 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "blox/json.hpp"
-#include "blox/variant.hpp"
+#include "blox/core/json.hpp"
+#include "blox/core/variant.hpp"
 
 namespace blox {
 

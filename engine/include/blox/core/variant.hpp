@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "blox/json.hpp"
+#include "blox/core/json.hpp"
 
 namespace blox {
 

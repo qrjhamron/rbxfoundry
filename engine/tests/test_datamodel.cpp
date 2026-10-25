@@ -5,7 +5,7 @@
 #include <cmath>
 #include <iostream>
 
-#include "blox/datamodel.hpp"
+#include "blox/datamodel/datamodel.hpp"
 
 using namespace blox;
 

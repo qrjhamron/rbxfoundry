@@ -4,8 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "blox/datamodel.hpp"
-#include "blox/renderer.hpp"
+#include "blox/datamodel/datamodel.hpp"
 
 namespace blox {
 

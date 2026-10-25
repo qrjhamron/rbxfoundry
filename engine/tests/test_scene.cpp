@@ -1,6 +1,6 @@
 // Part B: part geometry generation, scene extraction and mesh loading tests.
-#include "blox/datamodel.hpp"
-#include "blox/scene.hpp"
+#include "blox/datamodel/datamodel.hpp"
+#include "blox/rendering/scene.hpp"
 
 #include <cmath>
 #include <cstdio>

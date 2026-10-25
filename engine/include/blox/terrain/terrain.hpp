@@ -5,7 +5,7 @@
 #include <string>
 #include <tuple>
 
-#include "blox/datamodel.hpp"
+#include "blox/datamodel/datamodel.hpp"
 
 namespace blox {
 

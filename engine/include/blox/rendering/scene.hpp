@@ -1,8 +1,8 @@
 #pragma once
 #include <string>
 
-#include "blox/datamodel.hpp"
-#include "blox/renderer.hpp"
+#include "blox/datamodel/datamodel.hpp"
+#include "blox/rendering/renderer.hpp"
 
 namespace blox {
 

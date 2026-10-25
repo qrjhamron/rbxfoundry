@@ -1,4 +1,4 @@
-#include "blox/terrain.hpp"
+#include "blox/terrain/terrain.hpp"
 
 #include <cmath>
 #include <cstring>

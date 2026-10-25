@@ -137,7 +137,7 @@ public:
     const std::string& device_name() const { return device_name_; }
 
     RenderResult render(const Scene& scene, const RenderRequest& request);
-    // Draws a laid-out UiScene (blox/ui.hpp) with the Vulkan UI pipeline.
+    // Draws a laid-out UiScene (blox/gui/ui.hpp) with the Vulkan UI pipeline.
     RenderResult render_ui(const UiScene& scene, const UiRenderRequest& request);
 
 private:

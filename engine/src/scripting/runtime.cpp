@@ -5,10 +5,10 @@
 // for Instance and the core Roblox datatypes. The sandbox removes
 // filesystem/process access; an interrupt-driven instruction budget
 // stops runaway scripts. Unsupported APIs raise explicit Luau errors.
-#include "blox/physics.hpp"
-#include "blox/terrain.hpp"
-#include "blox/ui.hpp"
-#include "blox/runtime.hpp"
+#include "blox/physics/physics.hpp"
+#include "blox/terrain/terrain.hpp"
+#include "blox/gui/ui.hpp"
+#include "blox/scripting/runtime.hpp"
 
 #include <algorithm>
 #include <cmath>

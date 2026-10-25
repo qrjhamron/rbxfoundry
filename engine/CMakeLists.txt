@@ -47,22 +47,63 @@ add_custom_command(
     DEPENDS ${BLOX_SPV_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_spv.cmake
     COMMENT "Embedding SPIR-V shaders")
 
-add_library(blox_engine_lib STATIC src/json.cpp src/datamodel.cpp src/scene.cpp src/mesh.cpp src/renderer.cpp src/ui.cpp src/runtime.cpp src/physics.cpp src/terrain.cpp src/script_tools.cpp ${BLOX_SPV_HEADER})
+# --- Domain libraries: dependencies below are the enforced architecture
+# --- boundaries (see docs/ARCHITECTURE.md). A domain may only link the
+# --- domains listed for it; main.cpp links only blox_ipc.
+find_package(Freetype QUIET)
+
+add_library(blox_core STATIC src/core/json.cpp)
+target_include_directories(blox_core PUBLIC include)
+target_compile_features(blox_core PUBLIC cxx_std_20)
+
+add_library(blox_datamodel STATIC src/datamodel/datamodel.cpp src/datamodel/reflection.cpp src/datamodel/transforms.cpp)
+target_include_directories(blox_datamodel PUBLIC include PRIVATE src/datamodel)
+target_compile_features(blox_datamodel PUBLIC cxx_std_20)
+target_link_libraries(blox_datamodel PUBLIC blox_core)
+
+add_library(blox_terrain STATIC src/terrain/terrain.cpp)
+target_include_directories(blox_terrain PUBLIC include)
+target_compile_features(blox_terrain PUBLIC cxx_std_20)
+target_link_libraries(blox_terrain PUBLIC blox_datamodel)
+
+add_library(blox_physics STATIC src/physics/physics.cpp)
 # Jolt is vendored with C++ RTTI off; the physics TU derives from
 # JPH::GroupFilter and must match (no dynamic_cast/typeid used there).
-set_source_files_properties(src/physics.cpp PROPERTIES COMPILE_OPTIONS "-fno-rtti")
-target_include_directories(blox_engine_lib PUBLIC include PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-target_compile_features(blox_engine_lib PUBLIC cxx_std_20)
-target_link_libraries(blox_engine_lib PUBLIC Vulkan::Vulkan PNG::PNG Luau.Compiler Luau.VM Luau.Analysis Jolt)
+set_source_files_properties(src/physics/physics.cpp PROPERTIES COMPILE_OPTIONS "-fno-rtti")
+target_include_directories(blox_physics PUBLIC include)
+target_compile_features(blox_physics PUBLIC cxx_std_20)
+target_link_libraries(blox_physics PUBLIC blox_datamodel blox_terrain Jolt)
 
-find_package(Freetype QUIET)
+add_library(blox_gui STATIC src/gui/text.cpp src/gui/layout.cpp)
+target_include_directories(blox_gui PUBLIC include PRIVATE src/gui)
+target_compile_features(blox_gui PUBLIC cxx_std_20)
+target_link_libraries(blox_gui PUBLIC blox_datamodel PNG::PNG)
 if(Freetype_FOUND)
-    target_link_libraries(blox_engine_lib PUBLIC Freetype::Freetype)
-    target_compile_definitions(blox_engine_lib PUBLIC BLOX_HAVE_FREETYPE=1)
+    target_link_libraries(blox_gui PUBLIC Freetype::Freetype)
+    target_compile_definitions(blox_gui PUBLIC BLOX_HAVE_FREETYPE=1)
 endif()
 
+add_library(blox_rendering STATIC src/rendering/scene.cpp src/rendering/mesh.cpp src/rendering/renderer.cpp src/rendering/image.cpp ${BLOX_SPV_HEADER})
+target_include_directories(blox_rendering PUBLIC include PRIVATE ${CMAKE_CURRENT_BINARY_DIR} src/rendering)
+target_compile_features(blox_rendering PUBLIC cxx_std_20)
+target_link_libraries(blox_rendering PUBLIC blox_datamodel blox_terrain blox_gui Vulkan::Vulkan PNG::PNG)
+
+add_library(blox_scripting STATIC src/scripting/runtime.cpp src/scripting/script_tools.cpp)
+target_include_directories(blox_scripting PUBLIC include PRIVATE src/scripting)
+target_compile_features(blox_scripting PUBLIC cxx_std_20)
+target_link_libraries(blox_scripting PUBLIC blox_datamodel blox_physics blox_terrain blox_gui Luau.Compiler Luau.VM Luau.Analysis)
+
+add_library(blox_ipc STATIC src/ipc/server.cpp src/ipc/handlers_script.cpp src/ipc/handlers_datamodel_newload.cpp src/ipc/handlers_datamodel.cpp src/ipc/handlers_runtime.cpp src/ipc/handlers_debug.cpp src/ipc/handlers_physics.cpp src/ipc/handlers_terrain.cpp src/ipc/handlers_render.cpp)
+target_include_directories(blox_ipc PUBLIC include PRIVATE src/ipc)
+target_compile_features(blox_ipc PUBLIC cxx_std_20)
+target_link_libraries(blox_ipc PUBLIC blox_core blox_datamodel blox_terrain blox_physics blox_gui blox_rendering blox_scripting)
+
+# Umbrella for tests and external consumers (interface only).
+add_library(blox_engine_lib INTERFACE)
+target_link_libraries(blox_engine_lib INTERFACE blox_ipc)
+
 add_executable(blox-engine src/main.cpp)
-target_link_libraries(blox-engine PRIVATE blox_engine_lib)
+target_link_libraries(blox-engine PRIVATE blox_ipc)
 
 if(BLOX_BUILD_TESTS)
     add_executable(test_datamodel tests/test_datamodel.cpp)

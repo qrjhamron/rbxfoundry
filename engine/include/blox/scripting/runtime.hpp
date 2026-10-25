@@ -5,7 +5,7 @@
 
 #include <functional>
 
-#include "blox/datamodel.hpp"
+#include "blox/datamodel/datamodel.hpp"
 
 namespace blox {
 class PhysicsWorld;

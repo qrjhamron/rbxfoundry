@@ -2,7 +2,7 @@
 // Format layouts follow the public Roblox mesh format (as also implemented
 // by the open-source rbx_mesh reference parser). Unsupported versions fail
 // with an explicit error; geometry is never faked.
-#include "blox/scene.hpp"
+#include "blox/rendering/scene.hpp"
 
 #include <algorithm>
 #include <cctype>

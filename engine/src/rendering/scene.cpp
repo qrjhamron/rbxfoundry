@@ -1,10 +1,10 @@
-#include "blox/scene.hpp"
-#include "blox/brickcolor.hpp"
-#include "blox/terrain.hpp"
+#include "blox/rendering/scene.hpp"
+#include "blox/core/brickcolor.hpp"
+#include "blox/terrain/terrain.hpp"
 
 #include <filesystem>
 
-#include "blox/ui.hpp"
+#include "blox/gui/ui.hpp"
 #include <set>
 
 #include <algorithm>

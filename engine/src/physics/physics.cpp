@@ -4,8 +4,8 @@
 // blocky R6/R15 rig. Approximations are deliberate and documented in
 // COMPATIBILITY.md (wedge/mesh parts collide as boxes; the character
 // does not push dynamic bodies).
-#include "blox/physics.hpp"
-#include "blox/terrain.hpp"
+#include "blox/physics/physics.hpp"
+#include "blox/terrain/terrain.hpp"
 
 #include <algorithm>
 #include <cmath>
