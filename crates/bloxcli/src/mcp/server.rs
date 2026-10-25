@@ -143,27 +143,76 @@ impl McpServer {
 
     // ------------------------------------------------------------ paths ---
 
-    /// Resolves a tool path inside the sandbox root. Existing files are
-    /// canonicalised; for new files the parent directory must resolve
-    /// inside the root.
+    /// Resolves a tool path inside the sandbox root (Gate A1).
+    ///
+    /// Race-resistant-by-construction for the checks that matter:
+    /// any `..` component is refused outright (so not-yet-existing
+    /// intermediate directories can never be materialised into a
+    /// traversal by a later `create_dir_all`), absolute paths must
+    /// already be inside the canonical root, and every existing
+    /// leading component is resolved through symlinks component by
+    /// component and required to stay inside the root. Remaining
+    /// (non-existent) components are plain names appended to a
+    /// verified in-root ancestor.
     pub(crate) fn sandbox_path(&self, raw: &str) -> Result<PathBuf> {
-        let candidate = if Path::new(raw).is_absolute() {
-            PathBuf::from(raw)
-        } else {
-            self.root.join(raw)
-        };
-        let resolved = if candidate.exists() {
-            candidate.canonicalize().mx()?
-        } else if let Some(parent) = candidate.parent() {
-            if parent.exists() {
-                let parent = parent.canonicalize().mx()?;
-                parent.join(candidate.file_name().ok_or_else(|| Error("invalid path".into()))?)
-            } else {
-                candidate.clone()
+        use std::path::Component;
+        if raw.trim().is_empty() {
+            return err("invalid path: empty".to_string());
+        }
+        let raw_path = Path::new(raw);
+        let mut names: Vec<std::ffi::OsString> = Vec::new();
+        if raw_path.is_absolute() {
+            // Must be lexically inside the (canonical) root already.
+            let stripped = raw_path.strip_prefix(&self.root).map_err(|_| {
+                Error(format!(
+                    "path '{}' escapes the MCP project root '{}'",
+                    raw,
+                    self.root.display()
+                ))
+            })?;
+            for component in stripped.components() {
+                match component {
+                    Component::Normal(name) => names.push(name.to_os_string()),
+                    _ => return err(format!("path '{raw}' escapes the MCP project root")),
+                }
             }
         } else {
-            candidate.clone()
-        };
+            for component in raw_path.components() {
+                match component {
+                    Component::Normal(name) => names.push(name.to_os_string()),
+                    Component::CurDir => {}
+                    _ => return err(format!("path '{raw}' escapes the MCP project root")),
+                }
+            }
+        }
+        if names.is_empty() {
+            return err(format!("invalid path '{raw}': no file name"));
+        }
+        // Resolve existing leading components through symlinks.
+        let mut resolved = self.root.clone();
+        let mut index = 0;
+        while index < names.len() {
+            let next = resolved.join(&names[index]);
+            match std::fs::symlink_metadata(&next) {
+                Ok(meta) if meta.file_type().is_symlink() || meta.is_dir() || meta.is_file() => {
+                    let canonical = next.canonicalize().mx()?;
+                    if !canonical.starts_with(&self.root) {
+                        return err(format!(
+                            "path '{}' escapes the MCP project root '{}'",
+                            raw,
+                            self.root.display()
+                        ));
+                    }
+                    resolved = canonical;
+                    index += 1;
+                }
+                _ => break, // does not exist yet: rest are plain names
+            }
+        }
+        while index < names.len() {
+            resolved.push(&names[index]);
+            index += 1;
+        }
         if !resolved.starts_with(&self.root) {
             return err(format!(
                 "path '{}' escapes the MCP project root '{}'",
