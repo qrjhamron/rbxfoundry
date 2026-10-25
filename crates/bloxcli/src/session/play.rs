@@ -207,8 +207,35 @@ impl Daemon {
         Ok(())
     }
 
+    /// Live GUI layout from the runtime model (Gate 1 inspectability):
+    /// snapshot -> layout in the scratch edit model -> restore.
+    fn runtime_gui(&mut self) -> JsonValue {
+        let snap = match self.engine.call("runtime/snapshot", json!({})) {
+            Ok(v) => v,
+            Err(_) => return json!(null),
+        };
+        let tree = match snap.get("tree").and_then(|t| node_from_value(t).ok()) {
+            Some(t) => t,
+            None => return json!(null),
+        };
+        if self.engine.load(&tree).is_err() { return json!(null); }
+        let layout = self.engine.call("ui/layout", json!({"width": 1280, "height": 720}));
+        if let Ok((edit_tree, _)) = crate::rbxio::read_place(&self.place) {
+            let _ = self.engine.load(&edit_tree);
+        }
+        match layout {
+            Ok(l) => json!({
+                "rectCount": l.get("rects").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0),
+                "quadCount": l.get("quadCount"),
+                "rects": l.get("rects"),
+            }),
+            Err(_) => json!(null),
+        }
+    }
+
     fn state_json(&mut self) -> Result<JsonValue> {
         let state = self.engine.call("physics/state", json!({}))?;
+        let gui = self.runtime_gui();
         Ok(json!({
             "playing": true,
             "rig": self.rig,
@@ -220,6 +247,7 @@ impl Daemon {
                        "mode": if self.first_person { "first-person" } else { "third-person" }},
             "heldKeys": self.held_keys,
             "logCount": self.logs.len(),
+            "gui": gui,
         }))
     }
 
@@ -393,22 +421,33 @@ impl Daemon {
             )
         };
         // Render from the runtime snapshot: swap the edit model (the
-        // runtime model is untouched by datamodel/load).
+        // runtime model is untouched by datamodel/load), composite the
+        // live GUI (StarterGui state as mutated by client scripts) over
+        // the 3D world from that same snapshot, then restore the edit
+        // model so screenshots never leak runtime state into editing.
         let snap = self.engine.call("runtime/snapshot", json!({}))?;
         let tree_json = snap.get("tree").ok_or_else(|| Error("snapshot missing tree".into()))?;
         let tree = node_from_value(tree_json)?;
         self.engine.load(&tree)?;
         let place_dir = self.place.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        let result = self.engine.render_screenshot(json!({
+        let probes = request.get("probes").cloned().unwrap_or(json!([]));
+        let result = self.engine.call("ui/render", json!({
             "width": width, "height": height, "outputPath": output,
-            "assetsDir": place_dir, "placeDir": place_dir, "shadows": true,
+            "assetsDir": place_dir, "placeDir": place_dir, "withScene": true,
             "camera": {"position": [eye.0, eye.1, eye.2], "lookAt": [look.0, look.1, look.2]},
-        }))?;
+            "probePixels": probes,
+        }));
+        let (edit_tree, _) = crate::rbxio::read_place(&self.place)?;
+        self.engine.load(&edit_tree)?;
+        let result = result?;
         Ok(json!({
             "ok": true, "output": output, "width": width, "height": height,
             "camera": {"position": [eye.0, eye.1, eye.2], "lookAt": [look.0, look.1, look.2]},
             "character": character,
             "device": result.get("device"),
+            "quadCount": result.get("quadCount"),
+            "rectCount": result.get("rectCount"),
+            "probes": result.get("probes"),
         }))
     }
 }

@@ -1070,17 +1070,26 @@ impl NetDaemon {
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let result = self.clients[idx].render_screenshot(json!({
+        // Composite this client's live GUI over its replicated world,
+        // then restore the client's edit model from the place file.
+        let probes = request.get("probes").cloned().unwrap_or(json!([]));
+        let result = self.clients[idx].call("ui/render", json!({
             "width": width, "height": height, "outputPath": output,
-            "assetsDir": place_dir, "placeDir": place_dir, "shadows": true,
+            "assetsDir": place_dir, "placeDir": place_dir, "withScene": true,
             "camera": {"position": [eye.0, eye.1, eye.2], "lookAt": [look.0, look.1, look.2]},
-        }))?;
+            "probePixels": probes,
+        }));
+        let (edit_tree, _) = crate::rbxio::read_place(&self.place)?;
+        self.clients[idx].load(&edit_tree)?;
+        let result = result?;
         Ok(json!({
             "ok": true, "output": output, "width": width, "height": height,
             "player": name,
             "camera": {"position": [eye.0, eye.1, eye.2], "lookAt": [look.0, look.1, look.2]},
             "character": character,
             "device": result.get("device"),
+            "quadCount": result.get("quadCount"),
+            "probes": result.get("probes"),
         }))
     }
 }

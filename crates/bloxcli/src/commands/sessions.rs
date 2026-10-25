@@ -15,6 +15,23 @@ pub fn cmd_play_daemon(global: &Global, args: &[String]) -> Result<()> {
     crate::session::play::run_daemon(&engine_path, &file, &rig)
 }
 
+/// Parses `--probes "x,y;x,y"` into [[x, y], ...] for screenshot
+/// pixel probes answered from the same rendered frame.
+pub(crate) fn parse_probes(raw: Option<&str>) -> Result<serde_json::Value> {
+    let mut out = Vec::new();
+    if let Some(raw) = raw {
+        for pair in raw.split(';').filter(|p| !p.trim().is_empty()) {
+            let mut it = pair.split(',');
+            let x: i64 = it.next().and_then(|v| v.trim().parse().ok())
+                .ok_or_else(|| usage_err("--probes expects 'x,y;x,y'"))?;
+            let y: i64 = it.next().and_then(|v| v.trim().parse().ok())
+                .ok_or_else(|| usage_err("--probes expects 'x,y;x,y'"))?;
+            out.push(json!([x, y]));
+        }
+    }
+    Ok(json!(out))
+}
+
 pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
     let Some((sub, rest)) = args.split_first() else {
         return Err(usage_err("play needs a subcommand: start|step|input|state|screenshot|logs|stop"));
@@ -151,13 +168,14 @@ pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "screenshot" => {
-            let parsed = parse_cmd(rest, &["output", "width", "height"], &[])?;
+            let parsed = parse_cmd(rest, &["output", "width", "height", "probes"], &[])?;
             let file = parsed.file()?;
             let output = parsed.opt("output").ok_or_else(|| usage_err("play screenshot requires --output <file.png>"))?;
             let width: i64 = parsed.opt("width").unwrap_or("1280").parse().map_err(|_| usage_err("--width must be an integer"))?;
             let height: i64 = parsed.opt("height").unwrap_or("720").parse().map_err(|_| usage_err("--height must be an integer"))?;
             let result = crate::session::play::send_request(&file, &json!({
-                "cmd": "screenshot", "output": output, "width": width, "height": height}))?;
+                "cmd": "screenshot", "output": output, "width": width, "height": height,
+                "probes": parse_probes(parsed.opt("probes"))?}))?;
             if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(Error(format!("screenshot failed: {}", result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"))));
             }
@@ -342,7 +360,7 @@ pub fn cmd_net(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "screenshot" => {
-            let parsed = parse_cmd(rest, &["player", "output", "width", "height"], &[])?;
+            let parsed = parse_cmd(rest, &["player", "output", "width", "height", "probes"], &[])?;
             let file = parsed.file()?;
             let output = parsed
                 .opt("output")
@@ -360,7 +378,8 @@ pub fn cmd_net(global: &Global, args: &[String]) -> Result<()> {
             let result = crate::session::net::send_request(
                 &file,
                 &json!({"cmd": "screenshot", "player": parsed.opt("player").unwrap_or("1"),
-                        "output": output, "width": width, "height": height}),
+                        "output": output, "width": width, "height": height,
+                        "probes": parse_probes(parsed.opt("probes"))?}),
             )?;
             if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
                 return Err(Error(format!(
