@@ -114,7 +114,7 @@ std::map<std::string, PropertyInfo> text_props() {
     props["TextStrokeTransparency"] = {ValueType::Float32, f32(1)};
     props["TextWrapped"] = {ValueType::Bool, Variant::make_bool(false)};
     props["TextScaled"] = {ValueType::Bool, Variant::make_bool(false)};
-    props["TextXAlignment"] = {ValueType::Enum, Variant::make_enum(1)};
+    props["TextXAlignment"] = {ValueType::Enum, Variant::make_enum(0)};
     props["TextYAlignment"] = {ValueType::Enum, Variant::make_enum(1)};
     props["RichText"] = {ValueType::Bool, Variant::make_bool(false)};
     props["LineHeight"] = {ValueType::Float32, f32(1)};
