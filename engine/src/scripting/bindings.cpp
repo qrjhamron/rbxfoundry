@@ -811,7 +811,11 @@ int inst_index(lua_State* L) {
         // GUI events (Phase 22), fired by Runtime::gui_click/gui_hover/
         // gui_type_text against the runtime model's own layout.
         key == "MouseButton1Click" || key == "MouseButton2Click" || key == "Activated" ||
-        key == "MouseEnter" || key == "MouseLeave" || key == "Focused" || key == "FocusLost") {
+        key == "MouseEnter" || key == "MouseLeave" || key == "Focused" || key == "FocusLost" ||
+        key == "InputBegan" || key == "InputChanged" || key == "InputEnded" ||
+        key == "MouseMoved" || key == "MouseButton1Down" || key == "MouseButton1Up" ||
+        key == "MouseButton2Down" || key == "MouseButton2Up" || key == "TouchTap" ||
+        key == "SelectionGained" || key == "SelectionLost") {
         push_signal(L, rt->impl_->instance_signal(rt, inst, key));
         return 1;
     }
@@ -1395,9 +1399,36 @@ Variant interpolate_variant(const Variant& from, const Variant& to, double a) {
             }
             break;
         }
-        case ValueType::CFrame:
+        case ValueType::CFrame: {
             for (int i = 0; i < 3; ++i) out.position[i] = lerp(from.position[i], to.position[i], a);
-            break; // rotation snaps at completion (documented approximation)
+            // Quaternion slerp between the two rotation matrices.
+            auto to_quat = [](const std::array<double, 9>& m, double q[4]) {
+                double tr = m[0] + m[4] + m[8];
+                if (tr > 0) { double s = std::sqrt(tr + 1.0) * 2; q[0] = 0.25 * s; q[1] = (m[7] - m[5]) / s; q[2] = (m[2] - m[6]) / s; q[3] = (m[3] - m[1]) / s; }
+                else if (m[0] > m[4] && m[0] > m[8]) { double s = std::sqrt(1.0 + m[0] - m[4] - m[8]) * 2; q[0] = (m[7] - m[5]) / s; q[1] = 0.25 * s; q[2] = (m[1] + m[3]) / s; q[3] = (m[2] + m[6]) / s; }
+                else if (m[4] > m[8]) { double s = std::sqrt(1.0 + m[4] - m[0] - m[8]) * 2; q[0] = (m[2] - m[6]) / s; q[1] = (m[1] + m[3]) / s; q[2] = 0.25 * s; q[3] = (m[5] + m[7]) / s; }
+                else { double s = std::sqrt(1.0 + m[8] - m[0] - m[4]) * 2; q[0] = (m[3] - m[1]) / s; q[1] = (m[2] + m[6]) / s; q[2] = (m[5] + m[7]) / s; q[3] = 0.25 * s; }
+            };
+            double qa[4], qb[4], qr[4];
+            to_quat(from.rotation, qa); to_quat(to.rotation, qb);
+            double dot = qa[0]*qb[0] + qa[1]*qb[1] + qa[2]*qb[2] + qa[3]*qb[3];
+            if (dot < 0) { dot = -dot; for (double& v : qb) v = -v; }
+            dot = std::min(1.0, dot);
+            double theta = std::acos(dot), sin_theta = std::sqrt(std::max(0.0, 1.0 - dot * dot));
+            for (int i = 0; i < 4; ++i) {
+                qr[i] = sin_theta > 1e-6
+                    ? (std::sin((1 - a) * theta) * qa[i] + std::sin(a * theta) * qb[i]) / sin_theta
+                    : qa[i] + (qb[i] - qa[i]) * a;
+            }
+            double n = std::sqrt(qr[0]*qr[0] + qr[1]*qr[1] + qr[2]*qr[2] + qr[3]*qr[3]);
+            if (n > 0) for (double& v : qr) v /= n;
+            double w = qr[0], x = qr[1], y = qr[2], z = qr[3];
+            out.rotation = {
+                1 - 2*(y*y + z*z), 2*(x*y - z*w),     2*(x*z + y*w),
+                2*(x*y + z*w),     1 - 2*(x*x + z*z), 2*(y*z - x*w),
+                2*(x*z - y*w),     2*(y*z + x*w),     1 - 2*(x*x + y*y)};
+            break;
+        }
         default: break;
     }
     return out;

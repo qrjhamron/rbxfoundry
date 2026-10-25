@@ -296,6 +296,12 @@ impl Daemon {
                         "y": request.get("y").cloned().unwrap_or(json!(0)),
                         "width": width, "height": height,
                     }))?,
+                    "wheel" => self.engine.call("runtime/wheel", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "delta": request.get("delta").cloned().unwrap_or(json!(1)),
+                        "width": width, "height": height,
+                    }))?,
                     "hover" => self.engine.call("runtime/hover", json!({
                         "x": request.get("x").cloned().unwrap_or(json!(0)),
                         "y": request.get("y").cloned().unwrap_or(json!(0)),

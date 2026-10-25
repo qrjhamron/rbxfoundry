@@ -1217,6 +1217,48 @@ Runtime::GuiHit Runtime::gui_click(double x, double y, uint32_t viewport_w, uint
     return out;
 }
 
+Runtime::GuiHit Runtime::gui_wheel(double x, double y, double delta, uint32_t viewport_w, uint32_t viewport_h) {
+    GuiHit out;
+    UiOptions options;
+    options.width = viewport_w;
+    options.height = viewport_h;
+    UiScene scene = build_ui_scene(model_, options);
+    const UiRect* best = nullptr;
+    for (const UiRect& rect : scene.rects) {
+        if (!rect_contains(rect, x, y)) continue;
+        if (rect.class_name != "ScrollingFrame") continue;
+        if (!best || rect.order > best->order) best = &rect;
+    }
+    if (!best) return out;
+    std::string error;
+    Instance* inst = model_.resolve_path(best->path, error);
+    if (!inst) return out;
+    out.hit = true;
+    out.path = best->path;
+    out.class_name = best->class_name;
+    out.event = "InputBegan";
+    // Scroll: wheel up (positive delta) moves the canvas up.
+    Variant canvas;
+    auto it = inst->properties.find("CanvasPosition");
+    double cy = 0;
+    if (it != inst->properties.end() && it->second.complex_value.is_array() &&
+        it->second.complex_value.as_array().size() == 2) {
+        cy = it->second.complex_value.as_array()[1].as_double();
+    }
+    double cx = it != inst->properties.end() && it->second.complex_value.is_array() &&
+                        it->second.complex_value.as_array().size() == 2
+                    ? it->second.complex_value.as_array()[0].as_double() : 0;
+    canvas.type = ValueType::Vector2;
+    canvas.complex_value = Json::array();
+    canvas.complex_value.push(Json(cx));
+    canvas.complex_value.push(Json(std::max(0.0, cy - delta * 40.0)));
+    std::string set_error;
+    model_.set_property(*inst, "CanvasPosition", canvas, set_error);
+    fire_instance_signal(this, L_, inst, "InputBegan", {});
+    process_threads(this);
+    return out;
+}
+
 Runtime::GuiHit Runtime::gui_hover(double x, double y, uint32_t viewport_w, uint32_t viewport_h) {
     GuiHit out;
     UiOptions options;

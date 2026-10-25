@@ -54,7 +54,7 @@ pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "input" => {
-            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch", "click", "hover", "type-text", "width", "height"], &["first-person", "third-person", "submit"])?;
+            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch", "click", "hover", "wheel", "type-text", "width", "height"], &["first-person", "third-person", "submit"])?;
             let file = parsed.file()?;
             let keys: Vec<&str> = parsed.opt("keys").unwrap_or("").split(',')
                 .map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
@@ -102,6 +102,17 @@ pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
                 }))?;
                 emit(global,
                      format!("hover ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
+                     json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
+                return Ok(());
+            }
+            if let Some(wheel) = parsed.opt("wheel") {
+                let (x, y) = parse_xy(wheel, "--wheel")?;
+                let state = crate::session::play::send_request(&file, &json!({
+                    "cmd": "gui", "kind": "wheel", "x": x, "y": y, "delta": 1,
+                    "width": viewport_w, "height": viewport_h,
+                }))?;
+                emit(global,
+                     format!("wheel ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
                      json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
                 return Ok(());
             }

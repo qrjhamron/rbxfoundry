@@ -859,6 +859,46 @@ RectF layout_object(const Instance& inst, RectF parent_content, float inherited_
             total += horizontal ? sizes[i].w : sizes[i].h;
             if (i) total += pad_px;
         }
+        // UIFlexItem (27C/27D): Grow/Fill children absorb extra main-axis
+        // space by GrowRatio; Shrink/Fill children absorb overflow by
+        // ShrinkRatio. Mode: None=0 Grow=1 Shrink=2 Fill=3 Custom=4.
+        {
+            float available = horizontal ? content.w : content.h;
+            auto flex_mode = [&](const Instance* child, int kind, float& ratio) {
+                const Instance* flex = decoration(*child, "UIFlexItem");
+                if (!flex) return false;
+                int64_t mode = uenum(*flex, "FlexMode", 0);
+                bool active = kind == 0 ? (mode == 1 || mode == 3 || mode == 4)
+                                        : (mode == 2 || mode == 3 || mode == 4);
+                if (!active) return false;
+                ratio = static_cast<float>(ufloat(*flex, kind == 0 ? "GrowRatio" : "ShrinkRatio", 1));
+                return ratio > 0;
+            };
+            if (total < available) {
+                float extra = available - total, sum = 0;
+                for (const Instance* child : children) { float r; if (flex_mode(child, 0, r)) sum += r; }
+                if (sum > 0) {
+                    for (size_t i = 0; i < children.size(); ++i) {
+                        float r; if (!flex_mode(children[i], 0, r)) continue;
+                        float add = extra * r / sum;
+                        if (horizontal) sizes[i].w += add; else sizes[i].h += add;
+                    }
+                    total = available;
+                }
+            } else if (total > available) {
+                float deficit = total - available, sum = 0;
+                for (const Instance* child : children) { float r; if (flex_mode(child, 1, r)) sum += r; }
+                if (sum > 0) {
+                    for (size_t i = 0; i < children.size(); ++i) {
+                        float r; if (!flex_mode(children[i], 1, r)) continue;
+                        float sub = deficit * r / sum;
+                        if (horizontal) sizes[i].w = std::max(0.0f, sizes[i].w - sub);
+                        else sizes[i].h = std::max(0.0f, sizes[i].h - sub);
+                    }
+                    total = available;
+                }
+            }
+        }
         // AutomaticSize on the container itself is handled by the caller via
         // returned rect only for non-forced objects; here we align children.
         int64_t halign = uenum(*list_layout, "HorizontalAlignment", 0);

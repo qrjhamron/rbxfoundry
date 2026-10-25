@@ -122,6 +122,17 @@ std::vector<char32_t> decode_utf8(const std::string& text) {
     return out;
 }
 
+// Grapheme-cluster support (27A, partial without HarfBuzz): combining
+// marks and variation selectors attach to their base glyph (zero
+// advance, drawn at the cluster origin); ZWJ is a no-op joiner.
+bool is_combining_mark(char32_t cp) {
+    return (cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+           (cp >= 0x1DC0 && cp <= 0x1DFF) || (cp >= 0x20D0 && cp <= 0x20FF) ||
+           (cp >= 0xFE00 && cp <= 0xFE0F) || (cp >= 0xFE20 && cp <= 0xFE2F) ||
+           (cp >= 0xE0100 && cp <= 0xE01EF);
+}
+bool is_joiner(char32_t cp) { return cp == 0x200D; }
+
 bool is_cjk_codepoint(char32_t cp) {
     return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
            (cp >= 0x20000 && cp <= 0x2FA1F);
@@ -228,6 +239,7 @@ float measure_text(const std::string& text, float size_px, const std::string& fo
     FT_Face primary = chain.faces.front();
     float width = 0;
     for (char32_t cp : decode_utf8(text)) {
+        if (is_combining_mark(cp) || is_joiner(cp)) continue; // zero-width in cluster
         FT_Face face = chain.pick(cp);
         if (!face) {
             // No font covers this codepoint: reserve .notdef width.
@@ -280,15 +292,18 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
         chain->set_size(job.size_px);
         FT_Face primary = chain->faces.front();
         float pen_x = job.x;
+        float cluster_x = job.x;
         float baseline = job.y;
         for (char32_t cp : decode_utf8(job.text)) {
             if (cp == U'\n') continue;
+            if (is_joiner(cp)) continue;
+            bool combining = is_combining_mark(cp);
             auto cache_key = std::make_tuple(job.font_path, cp, static_cast<int>(job.size_px * 4));
             if (auto cached = glyph_cache.find(cache_key); cached != glyph_cache.end()) {
                 const CachedGlyph& g = cached->second;
-                float gx = pen_x + g.bearing_x;
+                float gx = (combining ? cluster_x : pen_x) + g.bearing_x;
                 float gy = baseline - g.bearing_y;
-                pen_x += g.advance;
+                if (!combining) { cluster_x = pen_x; pen_x += g.advance; }
                 if (g.empty) continue;
                 if (gx + g.w < job.clip_x || gx > job.clip_x + job.clip_w ||
                     gy + g.h < job.clip_y || gy > job.clip_y + job.clip_h) {
@@ -325,9 +340,9 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
             }
             if (FT_Load_Glyph(face, index, FT_LOAD_RENDER) != 0) continue;
             FT_GlyphSlot glyph = face->glyph;
-            float gx = pen_x + glyph->bitmap_left;
+            float gx = (combining ? cluster_x : pen_x) + glyph->bitmap_left;
             float gy = baseline - glyph->bitmap_top;
-            pen_x += static_cast<float>(glyph->advance.x >> 6);
+            if (!combining) { cluster_x = pen_x; pen_x += static_cast<float>(glyph->advance.x >> 6); }
             FT_Bitmap& bmp = glyph->bitmap;
             if (bmp.width == 0 || bmp.rows == 0) {
                 CachedGlyph g;

@@ -88,6 +88,24 @@ EngineServer::Reply EngineServer::handle_runtime(const std::string& method, cons
             if (method == "runtime/state") {
                 return Reply::ok(runtime_state());
             }
+            if (method == "runtime/wheel") {
+                double x = 0, y = 0, delta = 0;
+                uint32_t vw = 1280, vh = 720;
+                if (const Json* v = params.find("x")) x = v->as_double();
+                if (const Json* v = params.find("y")) y = v->as_double();
+                if (const Json* v = params.find("delta")) delta = v->as_double();
+                if (const Json* v = params.find("width")) vw = static_cast<uint32_t>(v->as_int(vw));
+                if (const Json* v = params.find("height")) vh = static_cast<uint32_t>(v->as_int(vh));
+                auto hit = runtime_->gui_wheel(x, y, delta, vw, vh);
+                Json result = runtime_state();
+                Json hit_json = Json::object();
+                hit_json.set("hit", Json(hit.hit));
+                hit_json.set("path", Json(hit.path));
+                hit_json.set("className", Json(hit.class_name));
+                hit_json.set("event", Json(hit.event));
+                result.set("hit", std::move(hit_json));
+                return Reply::ok(std::move(result));
+            }
             if (method == "runtime/click" || method == "runtime/hover") {
                 double x = 0, y = 0;
                 uint32_t vw = 1280, vh = 720;

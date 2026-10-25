@@ -509,6 +509,12 @@ const std::map<std::string, PropertyInfo>* reflection_for(const std::string& cla
                 {"Wraps", {ValueType::Bool, Variant::make_bool(false)}},
             };
             m["UIGridLayout"] = m["UIListLayout"];
+            m["UIFlexItem"] = {
+                {"FlexMode", {ValueType::Enum, Variant::make_enum(0)}},
+                {"GrowRatio", {ValueType::Float32, f32(1)}},
+                {"ShrinkRatio", {ValueType::Float32, f32(1)}},
+                {"ItemLineAlignment", {ValueType::Enum, Variant::make_enum(0)}},
+            };
             m["UIPageLayout"] = m["UIListLayout"];
             m["UIGradient"] = {
                 {"Color", {ValueType::ColorSequence, default_color_sequence()}},

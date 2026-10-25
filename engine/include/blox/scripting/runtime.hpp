@@ -78,6 +78,9 @@ public:
     };
     GuiHit gui_click(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
     GuiHit gui_hover(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
+    // Mouse wheel over a ScrollingFrame (27E): adjusts CanvasPosition
+    // and fires InputBegan on the hit frame.
+    GuiHit gui_wheel(double x, double y, double delta, uint32_t viewport_w, uint32_t viewport_h);
     // Types into the focused TextBox (fires the Text property change);
     // submit fires FocusLost(true) and clears focus.
     bool gui_type_text(const std::string& text, bool submit);
