@@ -51,6 +51,11 @@ std::string resolve_asset(const std::string& raw_id, const std::string& extensio
         if (!options.place_dir.empty()) candidates.push_back(options.place_dir + "/" + base);
         if (!options.place_dir.empty()) candidates.push_back(options.place_dir + "/" + id);
         candidates.push_back(id);
+        // Bare names ("cube_v5") resolve with the expected extension,
+        // mirroring the numeric-id branch above.
+        if (!options.assets_dir.empty()) candidates.push_back(options.assets_dir + "/" + base + extension);
+        if (!options.place_dir.empty()) candidates.push_back(options.place_dir + "/" + base + extension);
+        candidates.push_back(id + extension);
     }
     for (const auto& path : candidates) {
         std::ifstream test(path, std::ios::binary);
@@ -397,6 +402,18 @@ bool load_mesh_geometry(const std::string& mesh_id, const std::string& texture_i
         // but the geometry still renders untextured.
     }
     return true;
+}
+
+bool load_mesh_points(const std::string& mesh_id, const SceneOptions& options,
+                      const Instance& part,
+                      std::vector<std::array<double, 3>>& points, std::string& error) {
+    DrawItem item;
+    if (!load_mesh_geometry(mesh_id, "", options, part, item, error)) return false;
+    points.clear();
+    points.reserve(item.positions.size());
+    for (const auto& v : item.positions)
+        points.push_back({static_cast<double>(v[0]), static_cast<double>(v[1]), static_cast<double>(v[2])});
+    return !points.empty();
 }
 
 std::string resolve_texture_asset(const std::string& raw_id, const SceneOptions& options, bool& found) {

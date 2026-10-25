@@ -32,6 +32,12 @@ bool load_mesh_geometry(const std::string& mesh_id, const std::string& texture_i
                         const SceneOptions& options, const Instance& part,
                         DrawItem& out, std::string& error);
 
+// Local-space vertex positions of the part's fitted mesh geometry
+// (same geometry the renderer draws). Used for convex collision hulls.
+bool load_mesh_points(const std::string& mesh_id, const SceneOptions& options,
+                      const Instance& part,
+                      std::vector<std::array<double, 3>>& points, std::string& error);
+
 // Local-space geometry generators (positions/normals/uvs/indices appended).
 // `size` is the part's full Size. Roblox fitting rules:
 //  - Block: the box itself.

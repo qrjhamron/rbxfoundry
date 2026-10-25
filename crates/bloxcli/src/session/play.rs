@@ -149,7 +149,8 @@ pub fn run_daemon(engine_path: &Path, place: &Path, rig: &str) -> Result<()> {
     engine.load(&node)?;
     engine.call("runtime/begin", json!({"dataStoreDir": crate::app::session::datastore_dir(place).to_string_lossy()}))?;
     let started = engine.call("runtime/runScripts", json!({}))?;
-    let physics = engine.call("physics/begin", json!({"rig": rig}))?;
+    let assets_dir = std::path::Path::new(place).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let physics = engine.call("physics/begin", json!({"rig": rig, "assetsDir": assets_dir}))?;
 
     let mut daemon = Daemon {
         engine,
@@ -213,6 +214,7 @@ impl Daemon {
             "rig": self.rig,
             "time": state.get("time"),
             "bodies": state.get("bodies"),
+            "meshHullVertices": state.get("meshHullVertices"),
             "character": state.get("character"),
             "camera": {"yawDeg": self.yaw.to_degrees(), "pitchDeg": self.pitch.to_degrees(),
                        "mode": if self.first_person { "first-person" } else { "third-person" }},

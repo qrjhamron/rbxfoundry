@@ -5,6 +5,7 @@
 // COMPATIBILITY.md (wedge/mesh parts collide as boxes; the character
 // does not push dynamic bodies).
 #include "blox/physics/physics.hpp"
+#include "blox/rendering/scene.hpp"
 #include "blox/terrain/terrain.hpp"
 
 #include <algorithm>
@@ -262,6 +263,8 @@ struct PhysicsWorld::Impl {
     std::map<Instance*, std::array<double, 12>> body_transforms; // last physics-owned CFrame (pos+rot)
     size_t skipped_bodies = 0;
     bool body_limit_hit = false;
+    std::string assets_dir;          // Gate C2: MeshPart hull resolution
+    size_t mesh_hull_vertices = 0;   // Gate C2: hull observability
     uint64_t terrain_signature = 0;
     bool terrain_built = false;
     std::map<BodyID, Instance*> by_id;
@@ -492,12 +495,15 @@ uint64_t part_signature(Instance& inst) {
     Variant cf = cframe_of(inst);
     const Variant* phys = prop(inst, "CustomPhysicalProperties");
     const Variant* group = prop(inst, "CollisionGroup");
+    const Variant* mesh = prop(inst, "MeshId");
     (void)cf; // CFrame is physics-owned for dynamic bodies; external
     // teleports are detected against body_transforms, not the signature.
     char buf[640];
     std::snprintf(buf, sizeof(buf),
-        "%s|shape=%lld|size=%.4f,%.4f,%.4f|anch=%d|col=%d|grp=%s|phys=%s",
+        "%s|shape=%lld|fid=%lld|mesh=%s|size=%.4f,%.4f,%.4f|anch=%d|col=%d|grp=%s|phys=%s",
         inst.class_name.c_str(), (long long)prop_enum(inst, "Shape", 1),
+        (long long)prop_enum(inst, "CollisionFidelity", 0),
+        (mesh && (mesh->type == ValueType::ContentId || mesh->type == ValueType::String)) ? mesh->string_value.c_str() : "",
         size[0], size[1], size[2],
         prop_bool(inst, "Anchored", false) ? 1 : 0, prop_bool(inst, "CanCollide", true) ? 1 : 0,
         (group && group->type == ValueType::String) ? group->string_value.c_str() : "",
@@ -505,6 +511,51 @@ uint64_t part_signature(Instance& inst) {
     uint64_t h = 1469598103934665603ULL;
     for (const char* c = buf; *c; ++c) { h ^= (uint8_t)*c; h *= 1099511628211ULL; }
     return h;
+}
+
+
+std::string collision_group_name(Instance& inst) {
+    const Variant* g = prop(inst, "CollisionGroup");
+    return (g && g->type == ValueType::String && !g->string_value.empty()) ? g->string_value : "Default";
+}
+
+uint32 group_id_for(PhysicsWorld::Impl& im, const std::string& name) {
+    auto it = im.group_ids.find(name);
+    if (it != im.group_ids.end()) return it->second;
+    uint32 id = static_cast<uint32>(im.group_ids.size());
+    im.group_ids[name] = id;
+    return id;
+}
+
+bool collision_groups_collide(PhysicsWorld::Impl& im, Instance* a, Instance* b) {
+    uint32 x = group_id_for(im, collision_group_name(*a));
+    uint32 y = group_id_for(im, collision_group_name(*b));
+    if (x == y || !im.group_filter) return true;
+    return im.group_filter->disabled.count({std::min(x, y), std::max(x, y)}) == 0;
+}
+
+// Re-read the PhysicsService collidable matrix so runtime changes
+// (SetCollisionGroupCollidable) take effect without a world rebuild.
+void refresh_group_matrix(PhysicsWorld::Impl& im, DataModel& model) {
+    if (!im.group_filter) im.group_filter = new CollisionMatrixFilter();
+    im.group_filter->disabled.clear();
+    group_id_for(im, "Default");
+    for (const auto& svc : model.root().children) {
+        if (svc->class_name != "PhysicsService") continue;
+        auto it = svc->properties.find("Attributes");
+        if (it == svc->properties.end() || it->second.type != ValueType::Attributes) continue;
+        for (const auto& [key, entry] : it->second.complex_value.as_object()) {
+            if (!key.starts_with("cg:")) continue;
+            const Json* v = entry.find("value");
+            if (!v || v->as_bool()) continue;
+            std::string pair = key.substr(3);
+            size_t bar = pair.find('|');
+            if (bar == std::string::npos) continue;
+            uint32 x = group_id_for(im, pair.substr(0, bar));
+            uint32 y = group_id_for(im, pair.substr(bar + 1));
+            if (x != y) im.group_filter->disabled.insert({std::min(x, y), std::max(x, y)});
+        }
+    }
 }
 
 bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
@@ -531,6 +582,37 @@ bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
         };
         auto hull = ConvexHullShapeSettings(points, 6).Create();
         shape = hull.IsValid() ? hull.Get() : RefConst<Shape>(new BoxShape(Vec3(hx, hy, hz)));
+    } else if (inst->class_name == "MeshPart" && prop_enum(*inst, "CollisionFidelity", 0) != 1
+               && !im.assets_dir.empty()) {
+        // Gate C2: convex hull from the actual fitted mesh geometry
+        // (CollisionFidelity Default/Hull/Precise; Precise uses the same
+        // hull - no convex decomposition yet). Box fidelity (1) and
+        // unresolvable assets fall back to the bounding box.
+        const Variant* mid = prop(*inst, "MeshId");
+        std::string mesh_id = (mid && (mid->type == ValueType::ContentId || mid->type == ValueType::String))
+                                  ? mid->string_value : "";
+        bool hulled = false;
+        if (!mesh_id.empty()) {
+            SceneOptions opts;
+            opts.assets_dir = im.assets_dir;
+            opts.place_dir = im.assets_dir;
+            std::vector<std::array<double, 3>> points;
+            std::string merr;
+            if (load_mesh_points(mesh_id, opts, *inst, points, merr) && points.size() >= 4) {
+                std::vector<Vec3> vec;
+                vec.reserve(points.size());
+                for (const auto& v : points) vec.emplace_back(static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2]));
+                auto hull = ConvexHullShapeSettings(vec.data(), static_cast<int>(vec.size())).Create();
+                if (hull.IsValid()) {
+                    shape = hull.Get();
+                    im.mesh_hull_vertices += points.size();
+                    hulled = true;
+                }
+            }
+        }
+        if (!hulled)
+            shape = new BoxShape(Vec3(static_cast<float>(size[0] / 2), static_cast<float>(size[1] / 2),
+                                      static_cast<float>(size[2] / 2)));
     } else {
         shape = new BoxShape(Vec3(static_cast<float>(size[0] / 2), static_cast<float>(size[1] / 2),
                                   static_cast<float>(size[2] / 2)));
@@ -546,9 +628,7 @@ bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
         const Variant* g = prop(*inst, "CollisionGroup");
         std::string name = (g && g->type == ValueType::String && !g->string_value.empty())
                                ? g->string_value : "Default";
-        auto git = im.group_ids.find(name);
-        uint32 gid = git != im.group_ids.end() ? git->second : 0;
-        settings.mCollisionGroup = CollisionGroup(im.group_filter, gid, 0);
+        settings.mCollisionGroup = CollisionGroup(im.group_filter, group_id_for(im, name), 0);
     }
     PhysProps phys = physical_props(*inst);
     if (!anchored) {
@@ -721,6 +801,7 @@ void PhysicsWorld::build_world() {
 
 
 void PhysicsWorld::sync_bodies() {
+    refresh_group_matrix(*impl_, model_);
     if (!impl_->built) { build_world(); return; }
     Impl& im = *impl_;
     Instance* workspace = workspace_of(model_);
@@ -884,6 +965,8 @@ std::vector<std::pair<Instance*, Instance*>> PhysicsWorld::take_touch_end_events
 }
 
 size_t PhysicsWorld::body_count() const { return impl_->by_id.size(); }
+void PhysicsWorld::set_assets_dir(std::string dir) { impl_->assets_dir = std::move(dir); }
+size_t PhysicsWorld::mesh_hull_vertices() const { return impl_->mesh_hull_vertices; }
 size_t PhysicsWorld::skipped_bodies() const { return impl_->skipped_bodies; }
 bool PhysicsWorld::body_limit_hit() const { return impl_->body_limit_hit; }
 
@@ -1360,6 +1443,8 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
                 Instance* b = im.by_id[bounds[j].first];
                 bool can_touch = prop_bool(*a, "CanTouch", true) && prop_bool(*b, "CanTouch", true);
                 if (!can_touch) { now_touching.erase(key); continue; }
+                // Gate C2: Touched respects the collision-group matrix.
+                if (!collision_groups_collide(im, a, b)) { now_touching.erase(key); continue; }
                 if (!im.touching.contains(key)) {
                     im.touch_events.push_back({a, b});
                     im.touch_events.push_back({b, a});

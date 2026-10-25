@@ -72,7 +72,7 @@ add_library(blox_physics STATIC src/physics/physics.cpp)
 set_source_files_properties(src/physics/physics.cpp PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 target_include_directories(blox_physics PUBLIC include)
 target_compile_features(blox_physics PUBLIC cxx_std_20)
-target_link_libraries(blox_physics PUBLIC blox_datamodel blox_terrain Jolt)
+target_link_libraries(blox_physics PUBLIC blox_datamodel blox_terrain blox_rendering Jolt)
 
 add_library(blox_gui STATIC src/gui/text.cpp src/gui/layout.cpp)
 target_include_directories(blox_gui PUBLIC include PRIVATE src/gui)

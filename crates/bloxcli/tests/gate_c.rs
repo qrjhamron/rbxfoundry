@@ -106,3 +106,100 @@ fn wedge_collider_is_a_real_slope() {
     // A real slope: the ball rolls toward -Z and loses height.
     assert!(z < 1.0 && y < 9.5, "ball slid down the wedge slope: y={y} z={z}");
 }
+
+#[test]
+fn collision_groups_gate_physics_and_touched() {
+    // Gate C2: a part in a group marked non-collidable with Default
+    // must fall through the ground AND never fire Touched, while a
+    // Default part lands and touches.
+    let dir = std::env::temp_dir().join(format!("bloxcli-gatec-groups-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("g.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    cli_ok(&["add", &f, "--parent", "Workspace", "--class", "Part", "--name", "Ground"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ground", "--property", "Size", "--value", "60,1,60"]);
+    cli_ok(&["move", &f, "--target", "Workspace/Ground", "--position", "0,-0.5,0"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ground", "--property", "Anchored", "--type", "Bool", "--value", "true"]);
+    for (name, x) in [("Solid", "-6"), ("Ghost", "6")] {
+        cli_ok(&["add", &f, "--parent", "Workspace", "--class", "Part", "--name", name]);
+        cli_ok(&["set", &f, "--target", &format!("Workspace/{name}"), "--property", "Shape", "--type", "Enum", "--value", "0"]);
+        cli_ok(&["set", &f, "--target", &format!("Workspace/{name}"), "--property", "Size", "--value", "2,2,2"]);
+        cli_ok(&["move", &f, "--target", &format!("Workspace/{name}"), "--position", &format!("{x},6,0")]);
+    }
+    cli_ok(&["add", &f, "--parent", "ServerScriptService", "--class", "Script", "--name", "Watch"]);
+    cli_ok(&["set", &f, "--target", "ServerScriptService/Watch", "--property", "Source", "--type", "String", "--value", r#"
+        local ps = game:GetService("PhysicsService")
+        ps:RegisterCollisionGroup("Ghosts")
+        ps:CollisionGroupSetCollidable("Ghosts", "Default", false)
+        print("collidable", ps:CollisionGroupsAreCollidable("Ghosts", "Default"))
+        ps:SetPartCollisionGroup(workspace.Ghost, "Ghosts")
+        workspace.Ground.Touched:Connect(function(hit) print("TOUCHED " .. hit.Name) end)
+    "#]);
+    cli_json(&["play", "start", &f]);
+    cli_json(&["play", "step", &f, "--steps", "200"]);
+    let logs = cli_json(&["play", "logs", &f]);
+    cli_json(&["play", "stop", &f, "--commit"]);
+    let text = serde_json::to_string(&logs).unwrap();
+    assert!(text.contains("collidable false"), "matrix query: {text}");
+    assert!(text.contains("TOUCHED Solid"), "default part touches: {text}");
+    assert!(!text.contains("TOUCHED Ghost"), "ghost must not fire Touched: {text}");
+    let (node, _) = bloxcli::rbxio::read_place(&file).expect("reopen committed");
+    let y_of = |name: &str| match node.find_path(&format!("Workspace/{name}")).expect(name).properties.get("CFrame") {
+        Some(bloxcli::tree::PropValue::CFrame(cf)) => cf.position[1] as f64,
+        other => panic!("{name} CFrame: {other:?}"),
+    };
+    let solid_y = y_of("Solid");
+    let ghost_y = y_of("Ghost");
+    assert!(solid_y > 0.5 && solid_y < 1.6, "solid rests on ground: {solid_y}");
+    assert!(ghost_y < -3.0, "ghost fell through ground: {ghost_y}");
+}
+
+#[test]
+fn meshpart_hull_collider_from_real_mesh() {
+    // Gate C2: MeshPart with CollisionFidelity=Hull builds a convex
+    // hull from the actual .mesh geometry (vertices observable through
+    // play state) and supports a resting ball like its rendered shape.
+    let dir = std::env::temp_dir().join(format!("bloxcli-gatec-mesh-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/cube_v5.mesh");
+    std::fs::copy(&fixture, dir.join("cube_v5.mesh")).unwrap();
+    let file = dir.join("g.rbxl");
+    let f = file.to_str().unwrap().to_string();
+    cli_ok(&["new", &f]);
+    cli_ok(&["add", &f, "--parent", "Workspace", "--class", "MeshPart", "--name", "Block"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Block", "--property", "MeshId", "--type", "ContentId", "--value", "cube_v5"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Block", "--property", "Size", "--value", "10,2,10"]);
+    cli_ok(&["move", &f, "--target", "Workspace/Block", "--position", "0,0,0"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Block", "--property", "Anchored", "--type", "Bool", "--value", "true"]);
+    cli_ok(&["add", &f, "--parent", "Workspace", "--class", "Part", "--name", "Ball"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ball", "--property", "Shape", "--type", "Enum", "--value", "0"]);
+    cli_ok(&["set", &f, "--target", "Workspace/Ball", "--property", "Size", "--value", "2,2,2"]);
+    cli_ok(&["move", &f, "--target", "Workspace/Ball", "--position", "0,6,0"]);
+    // CollisionFidelity is DoesNotSerialize in genuine Roblox
+    // reflection: it is a session property, set here from Luau.
+    cli_ok(&["add", &f, "--parent", "ServerScriptService", "--class", "Script", "--name", "Cfg"]);
+    cli_ok(&["set", &f, "--target", "ServerScriptService/Cfg", "--property", "Source", "--type", "String", "--value", r#"
+        workspace.Block.CollisionFidelity = Enum.CollisionFidelity.Hull
+        print("fid set", workspace.Block.CollisionFidelity)
+    "#]);
+    let started = cli_json(&["play", "start", &f]);
+    let _ = started;
+    let stepped = cli_json(&["play", "step", &f, "--steps", "200"]);
+    let hull_vertices = stepped["state"]["meshHullVertices"].as_i64()
+        .or_else(|| stepped["meshHullVertices"].as_i64()).unwrap_or(0);
+    let logs = cli_json(&["play", "logs", &f]);
+    cli_json(&["play", "stop", &f, "--commit"]);
+    assert!(serde_json::to_string(&logs).unwrap().contains("fid set 2"), "luau fidelity assignment: {logs}");
+    assert!(hull_vertices > 0, "hull built from mesh vertices: {stepped}");
+    let (node, _) = bloxcli::rbxio::read_place(&file).expect("reopen committed");
+    let ball = node.find_path("Workspace/Ball").expect("ball");
+    match ball.properties.get("CFrame") {
+        Some(bloxcli::tree::PropValue::CFrame(cf)) => {
+            assert!(cf.position[1] > 1.4 && cf.position[1] < 2.6, "ball rests on hull top (y=2): {:?}", cf.position);
+        }
+        other => panic!("ball CFrame: {other:?}"),
+    }
+}

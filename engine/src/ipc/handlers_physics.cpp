@@ -9,6 +9,7 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                 std::string rig = "R6";
                 if (const Json* r = params.find("rig")) rig = r->as_string();
                 physics_ = std::make_unique<blox::PhysicsWorld>(runtime_model_);
+                if (const Json* ad = params.find("assetsDir")) physics_->set_assets_dir(ad->as_string());
                 physics_->spawn_character(rig);
                 physics_->build_world();
                 runtime_->set_physics(physics_.get());
@@ -21,6 +22,7 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
             }
             if (method == "physics/beginMulti") {
                 physics_ = std::make_unique<blox::PhysicsWorld>(runtime_model_);
+                if (const Json* ad = params.find("assetsDir")) physics_->set_assets_dir(ad->as_string());
                 runtime_->set_physics(physics_.get());
                 Json chars = Json::array();
                 if (const Json* players = params.find("players")) {
@@ -131,6 +133,7 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                 result.set("character", character_json());
                 result.set("time", Json(physics_->time()));
                 result.set("bodies", Json(static_cast<int64_t>(physics_->body_count())));
+                result.set("meshHullVertices", Json(static_cast<int64_t>(physics_->mesh_hull_vertices())));
                 return Reply::ok(std::move(result));
             }
             if (method == "physics/raycast") {

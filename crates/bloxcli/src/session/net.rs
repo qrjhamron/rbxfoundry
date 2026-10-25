@@ -481,7 +481,7 @@ pub fn run_daemon(
         .collect();
     let begun = daemon
         .server
-        .call("physics/beginMulti", json!({"players": players_json}))?;
+        .call("physics/beginMulti", json!({"players": players_json, "assetsDir": std::path::Path::new(place).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()}))?;
     daemon.characters = begun.get("characters").cloned().unwrap_or(json!([]));
     for name in &player_names {
         let resp = daemon.server.call(

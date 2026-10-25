@@ -416,6 +416,9 @@ const std::map<std::string, PropertyInfo>* reflection_for(const std::string& cla
             merged["TextureID"] = {ValueType::ContentId, mesh_id};
             merged["DoubleSided"] = {ValueType::Bool, Variant::make_bool(false)};
             merged["RenderFidelity"] = {ValueType::Enum, Variant::make_enum(0)};
+            // Enum.CollisionFidelity: Default=0, Box=1, Hull=2,
+            // PreciseConvexDecomposition=3 (Gate C2).
+            merged["CollisionFidelity"] = {ValueType::Enum, Variant::make_enum(0)};
             merged.erase("Shape"); // Part-only; MeshPart derives from BasePart
             return merged;
         }();

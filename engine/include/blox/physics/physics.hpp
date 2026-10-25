@@ -43,6 +43,10 @@ public:
     // once after begin). `character_model` subtree is excluded (driven
     // by the character controller instead).
     void build_world();
+    // Directory for resolving MeshPart collision geometry (Gate C2).
+    void set_assets_dir(std::string dir);
+    // Vertices consumed by MeshPart convex hulls (observability).
+    size_t mesh_hull_vertices() const;
     // Gate A3: diff live DataModel against built bodies (create /
     // recreate / destroy only what changed). Called by step().
     void sync_bodies();
