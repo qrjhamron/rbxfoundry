@@ -118,6 +118,12 @@ public:
     // Physics world used by Workspace:Raycast / spatial queries (Gate 10).
     void set_physics(PhysicsWorld* physics);
 
+    // Offline DataStore emulation (Phase 29): JSON file-backed store
+    // directory (one datastores.json inside). Local emulation only;
+    // never Roblox production DataStores.
+    void set_datastore_dir(const std::string& dir);
+    const std::string& datastore_dir() const;
+
     // ---- Debugger (Phase 23) ----
     // Real Luau VM debugging: lua_breakpoint on script main chunks,
     // LUA_BREAK yields, single-step via lua_singlestep + debugstep

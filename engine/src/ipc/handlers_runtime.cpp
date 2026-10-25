@@ -11,6 +11,9 @@ EngineServer::Reply EngineServer::handle_runtime(const std::string& method, cons
                 std::string error;
                 if (!runtime_model_.load_snapshot(tree, error)) { return Reply::error(-32020, error); }
                 runtime_ = std::make_unique<blox::Runtime>(runtime_model_);
+        if (const Json* ds = params.find("dataStoreDir")) {
+            if (ds->is_string()) runtime_->set_datastore_dir(ds->as_string());
+        }
                 runtime_active_ = true;
                 outgoing_remotes_.clear();
                 runtime_->set_remote_sink([&](const blox::Runtime::RemoteCall& call) {

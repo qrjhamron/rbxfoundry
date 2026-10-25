@@ -306,7 +306,7 @@ void register_bindings(lua_State* L, Runtime* rt) {
 
     for (const char* table : {"blox_methods", "blox_signal_methods", "blox_connection_methods",
                               "blox_tween_methods", "blox_vector3_methods", "blox_cframe_methods",
-                              "blox_track_methods"}) {
+                              "blox_track_methods", "blox_datastore_methods"}) {
         lua_newtable(L);
         lua_setfield(L, LUA_REGISTRYINDEX, table);
     }
@@ -375,6 +375,22 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_pushcfunction(L, enumitem_eq, "__eq"); lua_setfield(L, -2, "__eq");
     lua_pop(L, 1);
     make_metatable(L, "BloxTween", "Tween", tween_index);
+    make_metatable(L, "BloxDataStore", "DataStore", ds_index);
+    set_method(L, "blox_datastore_methods", "GetAsync", ds_get_async);
+    set_method(L, "blox_datastore_methods", "SetAsync", ds_set_async);
+    set_method(L, "blox_datastore_methods", "UpdateAsync", ds_update_async);
+    set_method(L, "blox_datastore_methods", "IncrementAsync", ds_increment_async);
+    set_method(L, "blox_datastore_methods", "RemoveAsync", ds_remove_async);
+    set_method(L, "blox_datastore_methods", "GetSortedAsync", ds_get_sorted);
+    set_method(L, "blox_methods", "GetDataStore", m_datastore_get_store);
+    set_method(L, "blox_methods", "GetOrderedDataStore", m_datastore_get_ordered);
+    set_method(L, "blox_methods", "GetRequestBudgetForRequestType", m_datastore_budget);
+    set_method(L, "blox_methods", "JSONEncode", m_http_json_encode);
+    set_method(L, "blox_methods", "JSONDecode", m_http_json_decode);
+    set_method(L, "blox_methods", "GenerateGUID", m_http_generate_guid);
+    set_method(L, "blox_methods", "GetAsync", m_http_request);
+    set_method(L, "blox_methods", "PostAsync", m_http_request);
+    set_method(L, "blox_methods", "RequestAsync", m_http_request);
     make_metatable(L, "BloxRegion3", "Region3", region3_index);
     luaL_newmetatable(L, "BloxRaycastParams");
     lua_pushstring(L, "RaycastParams"); lua_setfield(L, -2, "__type");
@@ -473,6 +489,10 @@ void register_bindings(lua_State* L, Runtime* rt) {
                          {"Quint", 5}, {"Bounce", 6}, {"Elastic", 7}, {"Exponential", 8},
                          {"Circular", 9}, {"Cubic", 10}}},
         {"EasingDirection", {{"In", 0}, {"Out", 1}, {"InOut", 2}}},
+        {"DataStoreRequestType", {{"GetAsync", 0}, {"SetIncrementAsync", 1}, {"UpdateAsync", 2},
+                                  {"GetSortedAsync", 3}, {"SetIncrementSortedAsync", 4}, {"OnUpdate", 5}}},
+        {"PlaybackState", {{"Begin", 0}, {"Delayed", 1}, {"Playing", 2}, {"Paused", 3},
+                           {"Completed", 4}, {"Cancelled", 5}}},
         {"KeyCode", {{"W", 87}, {"A", 65}, {"S", 83}, {"D", 68}, {"Space", 32}, {"Up", 273},
                      {"Down", 274}, {"Left", 276}, {"Right", 275}, {"LeftShift", 304},
                      {"E", 69}, {"Q", 81}, {"F", 70}, {"R", 82}}},
@@ -751,6 +771,8 @@ void Runtime::set_character_resolver(std::function<Instance*(Instance*)> resolve
     impl_->character_resolver = std::move(resolver);
 }
 void Runtime::set_physics(PhysicsWorld* physics) { impl_->physics = physics; }
+void Runtime::set_datastore_dir(const std::string& dir) { impl_->datastore_dir = dir; }
+const std::string& Runtime::datastore_dir() const { return impl_->datastore_dir; }
 
 std::vector<LuaArg> json_args_to_lua_args(const std::string& args_json) {
     std::vector<LuaArg> out;

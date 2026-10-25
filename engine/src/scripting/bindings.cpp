@@ -7,6 +7,9 @@
 #include "blox/gui/ui.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
 #include <cmath>
 #include <cstring>
 
@@ -1096,7 +1099,7 @@ int m_get_service(lua_State* L) {
     }
     static const char* kServices[] = {"Workspace", "Lighting", "ReplicatedStorage", "ServerStorage",
         "ServerScriptService", "StarterGui", "StarterPlayer", "StarterPack", "Teams", "SoundService",
-        "RunService", "Players", "TweenService", "CollectionService", "UserInputService", "TextService", "PhysicsService", "ContextActionService", "PathfindingService"};
+        "RunService", "Players", "TweenService", "CollectionService", "UserInputService", "TextService", "PhysicsService", "ContextActionService", "PathfindingService", "DataStoreService", "HttpService"};
     for (const char* known : kServices) {
         if (std::string(service) == known) {
             Instance& created = model.add_instance(model.root(), service, service);
@@ -2975,6 +2978,214 @@ int m_terrain_paste_region(lua_State* L) {
         else if (paste_empty) grid.cells.erase(key);
     }
     if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+
+
+// ------------------------------------------------- DataStore / Http (Phase 29) --
+// Offline emulation only. DataStores persist to <dir>/datastores.json
+// (atomic temp+rename) owned by the Runtime; HttpService performs no
+// network access (requests error explicitly, JSON/GUID are local).
+
+void datastore_load(Runtime* rt) {
+    if (rt->impl_->datastores_loaded) return;
+    rt->impl_->datastores_loaded = true;
+    if (rt->impl_->datastore_dir.empty()) return;
+    std::string path = rt->impl_->datastore_dir + "/datastores.json";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    std::string text; char buf[8192]; size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
+    fclose(f);
+    Json root; std::string err;
+    if (!Json::parse(text, root, err) || !root.is_object()) return;
+    for (const auto& [store, keys] : root.as_object()) {
+        if (!keys.is_object()) continue;
+        for (const auto& [k, v] : keys.as_object()) rt->impl_->datastores[store][k] = v;
+    }
+}
+void datastore_save(Runtime* rt) {
+    if (rt->impl_->datastore_dir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(rt->impl_->datastore_dir, ec);
+    Json root = Json::object();
+    for (const auto& [store, keys] : rt->impl_->datastores) {
+        Json obj = Json::object();
+        for (const auto& [k, v] : keys) obj.set(k, v);
+        root.set(store, std::move(obj));
+    }
+    std::string path = rt->impl_->datastore_dir + "/datastores.json";
+    std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    std::string text = root.dump();
+    fwrite(text.data(), 1, text.size(), f);
+    fclose(f);
+    std::filesystem::rename(tmp, path, ec);
+}
+
+static std::string ds_store_key(lua_State* L, int idx) {
+    UData* u = check_box(L, idx, UKind::DataStore, "DataStore");
+    return u->s1 + "/" + u->s2;
+}
+static void ds_check_server(Runtime* rt) {
+    if (rt->net_context() == Runtime::NetContext::Client) {
+        // Roblox DataStores are server-only; surface as Luau error at call site via sentinel.
+    }
+    (void)rt;
+}
+int m_datastore_get_store(lua_State* L) {
+    { Instance* self = check_instance(L, 1); if (self->class_name != "DataStoreService") luaL_error(L, "this method is only available on DataStoreService"); }
+    Runtime* rt = rt_of(L);
+    if (rt->net_context() == Runtime::NetContext::Client)
+        luaL_error(L, "DataStoreService is only available on the server");
+    const char* name = luaL_checkstring(L, 2);
+    const char* scope = luaL_optstring(L, 3, "global");
+    if (!name[0]) luaL_error(L, "DataStore name must not be empty");
+    datastore_load(rt);
+    UData* u = new_box(L, UKind::DataStore, "BloxDataStore");
+    u->s1 = name; u->s2 = scope;
+    u->flag = lua_toboolean(L, 1) != 0 && false; // ordered flag set by wrapper below
+    // Distinguish ordered stores by the service method name used: the
+    // caller (GetOrderedDataStore registration) passes a marker in s1?
+    return 1;
+}
+int m_datastore_budget(lua_State* L) {
+    // Local emulation budget (documented): a fixed generous budget.
+    lua_pushinteger(L, 60);
+    return 1;
+}
+int ds_get_async(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    const char* key = luaL_checkstring(L, 2);
+    if (!key[0] || std::string(key).size() > 128) luaL_error(L, "DataStore key must be 1-128 characters");
+    auto sit = rt->impl_->datastores.find(ds_store_key(L, 1));
+    if (sit == rt->impl_->datastores.end()) { lua_pushnil(L); return 1; }
+    auto kit = sit->second.find(key);
+    if (kit == sit->second.end()) { lua_pushnil(L); return 1; }
+    push_json_value(L, rt, kit->second);
+    return 1;
+}
+int ds_set_async(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    const char* key = luaL_checkstring(L, 2);
+    if (!key[0] || std::string(key).size() > 128) luaL_error(L, "DataStore key must be 1-128 characters");
+    std::string err;
+    Json v = lua_value_to_json(L, 3, 0, err);
+    if (!err.empty()) luaL_error(L, "DataStore value is not serializable: %s", err.c_str());
+    rt->impl_->datastores[ds_store_key(L, 1)][key] = v;
+    datastore_save(rt);
+    return 0;
+}
+int ds_update_async(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    const char* key = luaL_checkstring(L, 2);
+    if (!key[0] || std::string(key).size() > 128) luaL_error(L, "DataStore key must be 1-128 characters");
+    // Call transform(oldValue) in a fresh thread via the scheduler's
+    // synchronous resume: invoke the function directly (it must not
+    // yield; documented for the offline emulation).
+    auto& store = rt->impl_->datastores[ds_store_key(L, 1)];
+    auto it = store.find(key);
+    if (it == store.end()) lua_pushnil(L); else push_json_value(L, rt, it->second);
+    lua_pushvalue(L, 3);
+    lua_insert(L, -2);
+    if (lua_pcall(L, 1, 1, 0) != 0) lua_error(L);
+    if (lua_isnil(L, -1)) { lua_pop(L, 1); lua_pushnil(L); return 1; }
+    std::string err;
+    Json v = lua_value_to_json(L, -1, 0, err);
+    lua_pop(L, 1);
+    if (!err.empty()) luaL_error(L, "UpdateAsync returned a non-serializable value: %s", err.c_str());
+    store[key] = v;
+    datastore_save(rt);
+    push_json_value(L, rt, v);
+    return 1;
+}
+int ds_increment_async(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    const char* key = luaL_checkstring(L, 2);
+    double delta = luaL_optnumber(L, 3, 1);
+    auto& store = rt->impl_->datastores[ds_store_key(L, 1)];
+    double cur = 0;
+    auto it = store.find(key);
+    if (it != store.end() && it->second.is_number()) cur = it->second.as_double();
+    double next = cur + delta;
+    store[key] = Json(next);
+    datastore_save(rt);
+    lua_pushnumber(L, next);
+    return 1;
+}
+int ds_remove_async(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    datastore_load(rt);
+    const char* key = luaL_checkstring(L, 2);
+    auto& store = rt->impl_->datastores[ds_store_key(L, 1)];
+    auto it = store.find(key);
+    if (it == store.end()) { lua_pushnil(L); return 1; }
+    Json old = it->second;
+    store.erase(it);
+    datastore_save(rt);
+    push_json_value(L, rt, old);
+    return 1;
+}
+int m_datastore_get_ordered(lua_State* L) {
+    int n = m_datastore_get_store(L);
+    auto* u = check_box(L, -1, UKind::DataStore, "DataStore");
+    u->flag = true;
+    return n;
+}
+int ds_get_sorted(lua_State* L) {
+    luaL_error(L, "GetSortedAsync is not supported by the offline DataStore emulation");
+    return 0;
+}
+int ds_index(lua_State* L) {
+    std::string key = luaL_checkstring(L, 2);
+    lua_getfield(L, LUA_REGISTRYINDEX, "blox_datastore_methods");
+    lua_pushstring(L, key.c_str());
+    lua_rawget(L, -2);
+    lua_remove(L, -2);
+    return 1;
+}
+int m_http_json_encode(lua_State* L) {
+    { Instance* self = check_instance(L, 1); if (self->class_name != "HttpService") luaL_error(L, "this method is only available on HttpService"); }
+    std::string err;
+    Json v = lua_value_to_json(L, 2, 0, err);
+    if (!err.empty()) luaL_error(L, "JSONEncode failed: %s", err.c_str());
+    lua_pushstring(L, v.dump().c_str());
+    return 1;
+}
+int m_http_json_decode(lua_State* L) {
+    { Instance* self = check_instance(L, 1); if (self->class_name != "HttpService") luaL_error(L, "this method is only available on HttpService"); }
+    Runtime* rt = rt_of(L);
+    const char* text = luaL_checkstring(L, 2);
+    Json v; std::string err;
+    if (!Json::parse(text, v, err)) luaL_error(L, "JSONDecode failed: %s", err.c_str());
+    push_json_value(L, rt, v);
+    return 1;
+}
+int m_http_generate_guid(lua_State* L) {
+    { Instance* self = check_instance(L, 1); if (self->class_name != "HttpService") luaL_error(L, "this method is only available on HttpService"); }
+    // Local GUID (randomness from the host; format matches Roblox's
+    // braced/uppercase option).
+    bool braces = lua_toboolean(L, 2) != 0;
+    static uint64_t counter = 0;
+    uint64_t a = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    uint64_t b = (++counter) * 0x9E3779B97F4A7C15ULL;
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%08llX-%04llX-%04llX-%04llX-%012llX",
+        (unsigned long long)((a >> 32) & 0xFFFFFFFF), (unsigned long long)((a >> 16) & 0xFFFF),
+        (unsigned long long)((a & 0xFFFF) | 0x4000), (unsigned long long)(((b >> 48) & 0x3FFF) | 0x8000),
+        (unsigned long long)(b & 0xFFFFFFFFFFFFULL));
+    std::string out = braces ? std::string("{") + buf + "}" : std::string(buf);
+    lua_pushstring(L, out.c_str());
+    return 1;
+}
+int m_http_request(lua_State* L) {
+    { Instance* self = check_instance(L, 1); if (self->class_name != "HttpService") luaL_error(L, "this method is only available on HttpService"); }
+    luaL_error(L, "HttpService requests are disabled in RBXFoundry's offline mode (no outbound network access)");
     return 0;
 }
 

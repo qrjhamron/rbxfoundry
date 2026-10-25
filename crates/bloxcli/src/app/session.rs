@@ -3,13 +3,20 @@
 //! atomic history-recording mutation helper. Commands must go
 //! through these instead of open-coding snapshot/history/write.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde_json::Value as JsonValue;
 use crate::cli::args::Global;
 use crate::protocol::engine::{find_engine, EngineClient};
 use crate::protocol::tree::{Node, Result};
 use crate::rbxio::{read_place, write_place, PlaceFormat};
 use crate::history::History;
+
+/// Offline DataStore directory for a place (Phase 29): sidecar next to
+/// the place file, e.g. `game.rbxl.bloxdata/datastores.json`.
+pub fn datastore_dir(place: &std::path::Path) -> PathBuf {
+    let name = place.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "place".into());
+    place.with_file_name(format!("{name}.bloxdata"))
+}
 
 pub fn spawn_engine(global: &Global) -> Result<EngineClient> {
     let path = find_engine(global.engine.as_deref())?;

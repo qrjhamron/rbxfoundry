@@ -147,7 +147,7 @@ pub fn run_daemon(engine_path: &Path, place: &Path, rig: &str) -> Result<()> {
     let (node, _format) = read_place(place)?;
     let mut engine = EngineClient::spawn(engine_path)?;
     engine.load(&node)?;
-    engine.call("runtime/begin", json!({}))?;
+    engine.call("runtime/begin", json!({"dataStoreDir": crate::app::session::datastore_dir(place).to_string_lossy()}))?;
     let started = engine.call("runtime/runScripts", json!({}))?;
     let physics = engine.call("physics/begin", json!({"rig": rig}))?;
 

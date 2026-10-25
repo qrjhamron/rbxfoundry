@@ -27,7 +27,7 @@ namespace blox {
 
 // ---------------------------------------------------------------- userdata --
 
-enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3 };
+enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3, DataStore };
 
 struct SignalImpl;
 
@@ -172,6 +172,10 @@ struct Runtime::Impl {
     };
     std::vector<std::unique_ptr<PathState>> paths;
     std::map<Instance*, std::string> humanoid_states;
+    // Phase 29 offline DataStores: "name/scope" -> key -> JSON value.
+    std::string datastore_dir;
+    std::map<std::string, std::map<std::string, Json>> datastores;
+    bool datastores_loaded = false;
     // Terrain CopyRegion clipboard (Phase 26): relative voxel cells.
     std::map<Instance*, std::map<std::tuple<int, int, int>, std::pair<uint16_t, uint8_t>>> terrain_clipboard;
     // ContextActionService bindings (Phase 14).
@@ -367,6 +371,22 @@ int m_terrain_read_voxels(lua_State* L);
 int m_text_service_get_text_size(lua_State* L);
 int fn_typeof(lua_State* L);
 int fn_tween_info_new(lua_State* L);
+int m_datastore_get_store(lua_State* L);
+int m_datastore_get_ordered(lua_State* L);
+int ds_get_async(lua_State* L);
+int ds_set_async(lua_State* L);
+int ds_update_async(lua_State* L);
+int ds_increment_async(lua_State* L);
+int ds_remove_async(lua_State* L);
+int ds_get_sorted(lua_State* L);
+int m_datastore_budget(lua_State* L);
+int m_http_json_encode(lua_State* L);
+int m_http_json_decode(lua_State* L);
+int m_http_generate_guid(lua_State* L);
+int m_http_request(lua_State* L);
+int ds_index(lua_State* L);
+void datastore_load(Runtime* rt);
+void datastore_save(Runtime* rt);
 double apply_easing_dir(const std::string& style, const std::string& direction, double t);
 void log_args(lua_State* L, const char* level);
 int fn_print(lua_State* L);

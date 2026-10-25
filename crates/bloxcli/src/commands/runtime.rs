@@ -23,7 +23,7 @@ pub fn cmd_run(global: &Global, args: &[String]) -> Result<()> {
         return Err(usage_err("--step must be > 0 and --duration >= 0"));
     }
     let (mut engine, _format) = load_session(global, &file)?;
-    engine.call("runtime/begin", json!({}))?;
+    engine.call("runtime/begin", json!({"dataStoreDir": crate::app::session::datastore_dir(&file).to_string_lossy()}))?;
     let mut state = engine.call("runtime/runScripts", json!({}))?;
     if let Some(source) = parsed.opt("eval") {
         state = engine.call("runtime/eval", json!({"source": source, "name": "cli-eval"}))?;
@@ -131,7 +131,7 @@ pub fn cmd_exec(global: &Global, args: &[String]) -> Result<()> {
     let file = parsed.file()?;
     let code = parsed.required("code")?.to_string();
     let (mut engine, _format) = load_session(global, &file)?;
-    engine.call("runtime/begin", json!({}))?;
+    engine.call("runtime/begin", json!({"dataStoreDir": crate::app::session::datastore_dir(&file).to_string_lossy()}))?;
     let state = engine.call("runtime/eval", json!({"source": code, "name": "command-bar"}))?;
     let logs = state.get("logs").cloned().unwrap_or_else(|| json!([]));
     let errors = state.get("errors").cloned().unwrap_or_else(|| json!([]));
