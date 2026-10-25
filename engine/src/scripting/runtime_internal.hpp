@@ -17,6 +17,7 @@
 
 #include "blox/scripting/runtime.hpp"
 #include "blox/physics/physics.hpp"
+#include "blox/terrain/terrain.hpp"
 
 #include "lua.h"
 #include "luacode.h"
@@ -26,7 +27,7 @@ namespace blox {
 
 // ---------------------------------------------------------------- userdata --
 
-enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult };
+enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult, Region3 };
 
 struct SignalImpl;
 
@@ -160,6 +161,8 @@ struct Runtime::Impl {
     };
     std::vector<std::unique_ptr<PathState>> paths;
     std::map<Instance*, std::string> humanoid_states;
+    // Terrain CopyRegion clipboard (Phase 26): relative voxel cells.
+    std::map<Instance*, std::map<std::tuple<int, int, int>, std::pair<uint16_t, uint8_t>>> terrain_clipboard;
     // ContextActionService bindings (Phase 14).
     struct BoundAction {
         std::string name;
@@ -337,6 +340,16 @@ void evaluate_anim_tracks(Runtime* rt, double dt);
 Instance* check_terrain(lua_State* L, int idx);
 uint16_t material_from_enum(lua_State* L, int idx);
 int m_terrain_fill_block(lua_State* L);
+int m_terrain_fill_cylinder(lua_State* L);
+int m_terrain_fill_wedge(lua_State* L);
+int m_terrain_fill_region(lua_State* L);
+int m_terrain_write_voxels(lua_State* L);
+int m_terrain_copy_region(lua_State* L);
+int m_terrain_paste_region(lua_State* L);
+int region3_new(lua_State* L);
+int region3_expand(lua_State* L);
+void push_region3(lua_State* L, std::array<double, 3> mn, std::array<double, 3> mx);
+int region3_index(lua_State* L);
 int m_terrain_fill_ball(lua_State* L);
 int m_terrain_clear(lua_State* L);
 int m_terrain_read_voxels(lua_State* L);

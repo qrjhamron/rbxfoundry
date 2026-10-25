@@ -79,6 +79,7 @@ const char* metatable_for(UKind kind) {
         case UKind::UDim: return "BloxUDim";
         case UKind::UDim2: return "BloxUDim2";
         case UKind::EnumItem: return "BloxEnumItem";
+        case UKind::Region3: return "BloxRegion3";
         default: return "BloxVector3";
     }
 }
@@ -2706,6 +2707,186 @@ int m_terrain_read_voxels(lua_State* L) {
         lua_rawseti(L, -2, x + 1); // Ox into O
     }
     return 2;
+}
+
+
+// -- Phase 26: Region3 + extended Terrain APIs -------------------------
+
+void push_region3(lua_State* L, std::array<double, 3> mn, std::array<double, 3> mx) {
+    UData* u = new_box(L, UKind::Region3, "BloxRegion3");
+    u->n = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], 0, 0, 0, 0, 0, 0};
+}
+void region3_bounds(lua_State* L, int idx, std::array<double, 3>& mn, std::array<double, 3>& mx) {
+    UData* u = check_box(L, idx, UKind::Region3, "Region3");
+    mn = {u->n[0], u->n[1], u->n[2]}; mx = {u->n[3], u->n[4], u->n[5]};
+}
+int region3_new(lua_State* L) {
+    auto* a = check_box(L, 1, UKind::Vector3, "Vector3");
+    auto* b = check_box(L, 2, UKind::Vector3, "Vector3");
+    push_region3(L, {std::min(a->n[0], b->n[0]), std::min(a->n[1], b->n[1]), std::min(a->n[2], b->n[2])},
+                    {std::max(a->n[0], b->n[0]), std::max(a->n[1], b->n[1]), std::max(a->n[2], b->n[2])});
+    return 1;
+}
+int region3_expand(lua_State* L) {
+    UData* self = check_box(L, lua_upvalueindex(1), UKind::Region3, "Region3");
+    double res = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : luaL_checknumber(L, 1);
+    if (!(res > 0)) luaL_error(L, "ExpandToGrid resolution must be positive");
+    std::array<double, 3> lo, hi;
+    for (int i = 0; i < 3; ++i) {
+        lo[i] = std::floor(self->n[i] / res) * res;
+        hi[i] = std::ceil(self->n[3 + i] / res) * res;
+    }
+    push_region3(L, lo, hi);
+    return 1;
+}
+int region3_index(lua_State* L) {
+    UData* u = check_box(L, 1, UKind::Region3, "Region3");
+    std::string key = luaL_checkstring(L, 2);
+    std::array<double, 3> mn{u->n[0], u->n[1], u->n[2]}, mx{u->n[3], u->n[4], u->n[5]};
+    if (key == "Min") { push_vector3(L, mn[0], mn[1], mn[2]); return 1; }
+    if (key == "Max") { push_vector3(L, mx[0], mx[1], mx[2]); return 1; }
+    if (key == "Size") { push_vector3(L, mx[0]-mn[0], mx[1]-mn[1], mx[2]-mn[2]); return 1; }
+    if (key == "CFrame") {
+        push_cframe(L, Variant::make_cframe((mn[0]+mx[0])/2, (mn[1]+mx[1])/2, (mn[2]+mx[2])/2));
+        return 1;
+    }
+    if (key == "ExpandToGrid") {
+        lua_pushvalue(L, 1);
+        lua_pushcclosure(L, region3_expand, "ExpandToGrid", 1);
+        return 1;
+    }
+    lua_pushnil(L); return 1;
+}
+
+int m_terrain_fill_cylinder(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    UData* cf = check_box(L, 2, UKind::CFrame, "CFrame");
+    double radius = luaL_checknumber(L, 3);
+    double height = luaL_checknumber(L, 4);
+    uint16_t material = material_from_enum(L, 5);
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    terrain_fill_cylinder(grid, {cf->n[0], cf->n[1], cf->n[2]}, radius, height, material);
+    if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+int m_terrain_fill_wedge(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    UData* cf = check_box(L, 2, UKind::CFrame, "CFrame");
+    UData* size = check_box(L, 3, UKind::Vector3, "Vector3");
+    uint16_t material = material_from_enum(L, 4);
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    terrain_fill_wedge(grid, {cf->n[0], cf->n[1], cf->n[2]}, {size->n[0], size->n[1], size->n[2]}, material);
+    if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+static void region_center_size(lua_State* L, int idx, std::array<double, 3>& center, std::array<double, 3>& size) {
+    std::array<double, 3> mn, mx; region3_bounds(L, idx, mn, mx);
+    for (int i = 0; i < 3; ++i) { center[i] = (mn[i]+mx[i])/2; size[i] = mx[i]-mn[i]; }
+}
+int m_terrain_fill_region(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    std::array<double, 3> center, size; region_center_size(L, 2, center, size);
+    double res = luaL_checknumber(L, 3);
+    if (res != 4.0) luaL_error(L, "FillRegion: only resolution 4 is supported");
+    uint16_t material = material_from_enum(L, 4);
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    terrain_fill_block(grid, center, size, material);
+    if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+int m_terrain_write_voxels(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    std::array<double, 3> center, size; region_center_size(L, 2, center, size);
+    double res = luaL_checknumber(L, 3);
+    if (res != 4.0) luaL_error(L, "WriteVoxels: only resolution 4 is supported");
+    // args 4/5: materials/occupancies [x][y][z]
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    int ox = static_cast<int>(std::floor((center[0]-size[0]/2)/kVoxelSize));
+    int oy = static_cast<int>(std::floor((center[1]-size[1]/2)/kVoxelSize));
+    int oz = static_cast<int>(std::floor((center[2]-size[2]/2)/kVoxelSize));
+    lua_pushvalue(L, 4); // materials
+    for (int x = 1; ; ++x) {
+        lua_rawgeti(L, -1, x); if (lua_isnil(L, -1)) { lua_pop(L, 1); break; }
+        for (int y = 1; ; ++y) {
+            lua_rawgeti(L, -1, y); if (lua_isnil(L, -1)) { lua_pop(L, 1); break; }
+            for (int z = 1; ; ++z) {
+                lua_rawgeti(L, -1, z); if (lua_isnil(L, -1)) { lua_pop(L, 1); break; }
+                uint16_t mat = material_from_enum(L, -1);
+                lua_pop(L, 1);
+                // occupancy [x][y][z]
+                lua_pushvalue(L, 5); lua_rawgeti(L, -1, x); lua_rawgeti(L, -1, y); lua_rawgeti(L, -1, z);
+                double occ = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0;
+                lua_pop(L, 4);
+                auto key = std::make_tuple(ox+x-1, oy+y-1, oz+z-1);
+                if (occ <= 0.0 || mat == 0) grid.cells.erase(key);
+                else grid.cells[key] = {mat, static_cast<uint8_t>(std::max(0.0, std::min(1.0, occ)) * 255)};
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+int m_terrain_copy_region(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    std::array<double, 3> center, size; region_center_size(L, 2, center, size);
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    int ox = static_cast<int>(std::floor((center[0]-size[0]/2)/kVoxelSize));
+    int oy = static_cast<int>(std::floor((center[1]-size[1]/2)/kVoxelSize));
+    int oz = static_cast<int>(std::floor((center[2]-size[2]/2)/kVoxelSize));
+    int nx = std::max(1, static_cast<int>(std::round(size[0]/kVoxelSize)));
+    int ny = std::max(1, static_cast<int>(std::round(size[1]/kVoxelSize)));
+    int nz = std::max(1, static_cast<int>(std::round(size[2]/kVoxelSize)));
+    auto& clip = rt->impl_->terrain_clipboard[terrain];
+    clip.clear();
+    // Store dimensions in a sentinel via negative key range: encode size
+    // by also recording every cell position (empty cells absent).
+    for (int x = 0; x < nx; ++x) for (int y = 0; y < ny; ++y) for (int z = 0; z < nz; ++z) {
+        auto it = grid.cells.find({ox+x, oy+y, oz+z});
+        if (it != grid.cells.end()) clip[{x, y, z}] = it->second;
+    }
+    // Remember extents in the first negative-x entry (material 0 sentinel).
+    clip[{-1, nx, ny}] = {static_cast<uint16_t>(nz), 0};
+    return 0;
+}
+int m_terrain_paste_region(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* terrain = check_terrain(L, 1);
+    std::array<double, 3> center, size; region_center_size(L, 2, center, size);
+    bool paste_empty = false;
+    if (lua_isboolean(L, 3)) paste_empty = lua_toboolean(L, 3) != 0;
+    if (lua_isboolean(L, 4)) paste_empty = lua_toboolean(L, 4) != 0;
+    auto cit = rt->impl_->terrain_clipboard.find(terrain);
+    if (cit == rt->impl_->terrain_clipboard.end()) luaL_error(L, "PasteRegion: nothing copied (call CopyRegion first)");
+    const auto clip = cit->second;
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    int ox = static_cast<int>(std::floor((center[0]-size[0]/2)/kVoxelSize));
+    int oy = static_cast<int>(std::floor((center[1]-size[1]/2)/kVoxelSize));
+    int oz = static_cast<int>(std::floor((center[2]-size[2]/2)/kVoxelSize));
+    int nx = std::max(1, static_cast<int>(std::round(size[0]/kVoxelSize)));
+    int ny = std::max(1, static_cast<int>(std::round(size[1]/kVoxelSize)));
+    int nz = std::max(1, static_cast<int>(std::round(size[2]/kVoxelSize)));
+    for (int x = 0; x < nx; ++x) for (int y = 0; y < ny; ++y) for (int z = 0; z < nz; ++z) {
+        auto it = clip.find({x, y, z});
+        auto key = std::make_tuple(ox+x, oy+y, oz+z);
+        if (it != clip.end()) grid.cells[key] = it->second;
+        else if (paste_empty) grid.cells.erase(key);
+    }
+    if (!terrain_store(rt->model(), *terrain, grid, error)) luaL_error(L, "%s", error.c_str());
+    return 0;
 }
 
 // ------------------------------------------------------------ TextService --

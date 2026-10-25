@@ -49,6 +49,16 @@ void terrain_fill_block(TerrainGrid& grid, std::array<double, 3> center,
                         std::array<double, 3> size, uint16_t material);
 void terrain_fill_ball(TerrainGrid& grid, std::array<double, 3> center, double radius,
                        uint16_t material);
+// Cylinder around the Y axis through `center` (CFrame rotation ignored,
+// like FillBlock): voxels whose centre lies within `radius` in XZ and
+// within `height/2` in Y.
+void terrain_fill_cylinder(TerrainGrid& grid, std::array<double, 3> center,
+                           double radius, double height, uint16_t material);
+// Wedge filling the lower half of the box in Z: a voxel is filled when
+// its centre is below the diagonal plane from the box's back-bottom to
+// its front-top (axis-aligned approximation, rotation ignored).
+void terrain_fill_wedge(TerrainGrid& grid, std::array<double, 3> center,
+                        std::array<double, 3> size, uint16_t material);
 
 // Studio Terrain Editor operations (Phase 21), all in voxel space:
 // flatten: level the region's columns to `height` (world Y) — material

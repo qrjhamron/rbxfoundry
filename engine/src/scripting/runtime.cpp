@@ -375,6 +375,7 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_pushcfunction(L, enumitem_eq, "__eq"); lua_setfield(L, -2, "__eq");
     lua_pop(L, 1);
     make_metatable(L, "BloxTween", "Tween", tween_index);
+    make_metatable(L, "BloxRegion3", "Region3", region3_index);
     luaL_newmetatable(L, "BloxRaycastParams");
     lua_pushstring(L, "RaycastParams"); lua_setfield(L, -2, "__type");
     lua_pushstring(L, "RaycastParams"); lua_setfield(L, -2, "__metatable");
@@ -536,6 +537,10 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_pushcfunction(L, m_raycast_params_new, "new"); lua_setfield(L, -2, "new");
     lua_setglobal(L, "RaycastParams");
 
+    lua_newtable(L);
+    lua_pushcfunction(L, region3_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "Region3");
+
     set_method(L, "blox_methods", "LoadAnimation", m_animator_load_animation);
     set_method(L, "blox_methods", "GetState", m_humanoid_get_state);
     set_method(L, "blox_methods", "CreatePath", m_pathfinding_create_path);
@@ -551,6 +556,12 @@ void register_bindings(lua_State* L, Runtime* rt) {
     set_method(L, "blox_methods", "FillBall", m_terrain_fill_ball);
     set_method(L, "blox_methods", "Clear", m_terrain_clear);
     set_method(L, "blox_methods", "ReadVoxels", m_terrain_read_voxels);
+    set_method(L, "blox_methods", "FillCylinder", m_terrain_fill_cylinder);
+    set_method(L, "blox_methods", "FillWedge", m_terrain_fill_wedge);
+    set_method(L, "blox_methods", "FillRegion", m_terrain_fill_region);
+    set_method(L, "blox_methods", "WriteVoxels", m_terrain_write_voxels);
+    set_method(L, "blox_methods", "CopyRegion", m_terrain_copy_region);
+    set_method(L, "blox_methods", "PasteRegion", m_terrain_paste_region);
     set_method(L, "blox_methods", "GetTextSize", m_text_service_get_text_size);
     set_method(L, "blox_methods", "Raycast", m_workspace_raycast);
     set_method(L, "blox_methods", "GetPartBoundsInBox", m_workspace_get_parts_in_box);

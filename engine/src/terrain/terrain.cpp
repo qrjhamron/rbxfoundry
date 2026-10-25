@@ -184,6 +184,44 @@ void terrain_fill_ball(TerrainGrid& grid, std::array<double, 3> center, double r
             }
 }
 
+void terrain_fill_cylinder(TerrainGrid& grid, std::array<double, 3> center,
+                           double radius, double height, uint16_t material) {
+    int lo[3], hi[3];
+    double size[3] = {radius * 2, height, radius * 2};
+    for (int axis = 0; axis < 3; ++axis) {
+        lo[axis] = static_cast<int>(std::floor((center[axis] - size[axis] / 2.0) / kVoxelSize));
+        hi[axis] = static_cast<int>(std::ceil((center[axis] + size[axis] / 2.0) / kVoxelSize)) - 1;
+    }
+    for (int x = lo[0]; x <= hi[0]; ++x)
+        for (int y = lo[1]; y <= hi[1]; ++y)
+            for (int z = lo[2]; z <= hi[2]; ++z) {
+                auto c = voxel_center(x, y, z);
+                double dx = c[0] - center[0], dz = c[2] - center[2];
+                if (dx * dx + dz * dz > radius * radius) continue;
+                if (material == 0) grid.cells.erase({x, y, z});
+                else grid.cells[{x, y, z}] = {material, 255};
+            }
+}
+
+void terrain_fill_wedge(TerrainGrid& grid, std::array<double, 3> center,
+                        std::array<double, 3> size, uint16_t material) {
+    int lo[3], hi[3];
+    for (int axis = 0; axis < 3; ++axis) {
+        lo[axis] = static_cast<int>(std::floor((center[axis] - size[axis] / 2.0) / kVoxelSize));
+        hi[axis] = static_cast<int>(std::ceil((center[axis] + size[axis] / 2.0) / kVoxelSize)) - 1;
+    }
+    for (int x = lo[0]; x <= hi[0]; ++x)
+        for (int y = lo[1]; y <= hi[1]; ++y)
+            for (int z = lo[2]; z <= hi[2]; ++z) {
+                auto c = voxel_center(x, y, z);
+                double tz = size[2] > 0 ? (c[2] - (center[2] - size[2] / 2.0)) / size[2] : 0.0;
+                double top = (center[1] - size[1] / 2.0) + tz * size[1];
+                if (c[1] > top) continue;
+                if (material == 0) grid.cells.erase({x, y, z});
+                else grid.cells[{x, y, z}] = {material, 255};
+            }
+}
+
 namespace {
 
 void region_bounds(std::array<double, 3> center, std::array<double, 3> size,
