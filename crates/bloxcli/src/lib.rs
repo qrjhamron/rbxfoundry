@@ -1,4 +1,6 @@
+pub mod completion;
 pub mod convert;
+pub mod debug;
 pub mod diff;
 pub mod engine;
 pub mod integrity;

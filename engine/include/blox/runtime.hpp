@@ -63,6 +63,24 @@ public:
     // script connected it, report externally-driven CFrame changes, and
     // feed UserInputService key state.
     void fire_event(Instance* inst, const std::string& signal_key);
+
+    // ---- GUI pointer interaction (Phase 22) ----
+    // Resolves synthetic pointer input against the runtime model's own
+    // GUI layout (the same build_ui_scene the renderer uses) and fires
+    // the real Luau signals: MouseButton1Click/Activated on
+    // GuiButtons, Focused/FocusLost on TextBoxes, MouseEnter/
+    // MouseLeave on hover changes.
+    struct GuiHit {
+        bool hit = false;
+        std::string path;
+        std::string class_name;
+        std::string event; // what was fired ("" when nothing fired)
+    };
+    GuiHit gui_click(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
+    GuiHit gui_hover(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
+    // Types into the focused TextBox (fires the Text property change);
+    // submit fires FocusLost(true) and clears focus.
+    bool gui_type_text(const std::string& text, bool submit);
     void notify_moved(const std::vector<Instance*>& moved);
     void set_key_state(const std::string& key_name, bool down);
 
@@ -99,6 +117,34 @@ public:
 
     // Physics world used by Workspace:Raycast / spatial queries (Gate 10).
     void set_physics(PhysicsWorld* physics);
+
+    // ---- Debugger (Phase 23) ----
+    // Real Luau VM debugging: lua_breakpoint on script main chunks,
+    // LUA_BREAK yields, single-step via lua_singlestep + debugstep
+    // hook, stack/locals via lua_getinfo/lua_getlocal/lua_getupvalue.
+    struct DebugFrame {
+        std::string function;
+        std::string source; // script path (chunk name without '=')
+        int line = 0;
+    };
+    struct DebugVariable {
+        std::string name;
+        std::string kind; // "local" | "upvalue"
+        std::string value; // formatted (JSON-ish, truncated)
+    };
+    struct DebugStatus {
+        bool paused = false;
+        bool finished = false;
+        std::string reason; // "breakpoint" | "step" | ""
+        std::string script;
+        int line = 0;
+        std::vector<DebugFrame> stack;
+    };
+    // Arms the debugger with breakpoints keyed by script path.
+    void debug_set_breakpoints(const std::map<std::string, std::vector<int>>& breakpoints);
+    DebugStatus debug_status(int frame, std::vector<DebugVariable>* variables) const;
+    // mode: "continue" | "stepInto" | "stepOver" | "stepOut".
+    bool debug_resume(const std::string& mode);
     // True while any AnimationTrack loaded through an Animator inside
     // `model_root` is playing (Gate 10 joint animation).
     bool animation_playing_in(Instance* model_root);

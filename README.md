@@ -3,7 +3,7 @@
 A native Linux, CLI-only, offline-first Roblox Studio alternative designed
 for AI coding agents.
 
-> **Status: v0.2.0-beta.1; Phases 1–6, 8–20 implemented** (Phase 7, browser play, is
+> **Status: v0.2.0-beta.1; Phases 1–6, 8–24 implemented** (Phase 7, browser play, is
 > intentionally skipped). Editing core, place templates, real headless
 > Vulkan rendering, a Roblox GUI engine with RichText and nine-slice
 > images, an **MCP server** for AI agents, the **official Luau runtime**,
@@ -172,6 +172,14 @@ Commands:
 | `place info|manifest <file>` | Place summary / offline sidecar manifest (`.manifest.json`). |
 | `template list|inspect|compare` | Template registry; `compare` diffs a template against a supplied fixture file. |
 | `parity dashboard` | Static HTML compatibility dashboard from `compat-report.json`. |
+| `ungroup <file> --target <model>` | Move a container's children to its parent and delete it (also MCP `instance_ungroup`). |
+| `set --targets a,b,c` | Bulk property edit across a multi-selection. |
+| `move --snap <studs>` / `rotate --snap-angle <deg>` | Grid and angle snapping. |
+| `exec <file> --code <luau>` | Studio Command Bar: Luau in the edit context, committed to the file. |
+| `terrain flatten|smooth|paint` | Voxel terrain sculpting on the real grid. |
+| `script analyze|complete` | Official Luau frontend diagnostics; reflection-based completion. |
+| `debug start|breakpoint|run|step-*|stack|variables|stop` | Real Luau VM debugger sessions (breakpoints, stepping, locals). |
+| `play input --click/--hover/--type-text` | GUI pointer/text input firing real LocalScript GUI events. |
 | `get <file> --target P [--property N]` | One instance (referent, properties, children) or one typed property. `Position`, `Name`, `ClassName` derived. |
 | `tree <file> [--path P] [--depth N] [--props]` | Hierarchy with stable referents (`#id`). |
 | `find <file> [--name N] [--class C] [--under P] [--contains]` | Search by exact/substring name and/or class. |

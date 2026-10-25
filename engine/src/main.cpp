@@ -9,6 +9,7 @@
 #include "blox/datamodel.hpp"
 #include "blox/json.hpp"
 #include "blox/renderer.hpp"
+#include "blox/script_tools.hpp"
 #include "blox/scene.hpp"
 #include "blox/physics.hpp"
 #include "blox/terrain.hpp"
@@ -221,6 +222,27 @@ int main(int argc, char** argv) {
         if (!initialized) { respond_error(-32001, "not initialized: call 'initialize' first"); continue; }
         if (method == "ping") { respond(Json("pong")); continue; }
 
+        if (method == "script/analyze") {
+            std::string source, name = "Main";
+            if (const Json* v = params.find("source")) source = v->as_string();
+            if (const Json* v = params.find("name")) name = v->as_string();
+            Json diagnostics = Json::array();
+            for (const auto& d : blox::analyze_luau(source, name)) {
+                Json item = Json::object();
+                item.set("severity", Json(d.severity));
+                item.set("kind", Json(d.kind));
+                item.set("message", Json(d.message));
+                item.set("line", Json(static_cast<int64_t>(d.line)));
+                item.set("column", Json(static_cast<int64_t>(d.column)));
+                item.set("endLine", Json(static_cast<int64_t>(d.end_line)));
+                item.set("endColumn", Json(static_cast<int64_t>(d.end_column)));
+                diagnostics.push(std::move(item));
+            }
+            Json result = Json::object();
+            result.set("diagnostics", std::move(diagnostics));
+            respond(std::move(result));
+            continue;
+        }
         if (method == "parity/imagediff") {
             auto str_param = [&](const char* key) -> std::string {
                 const Json* v = params.find(key);
@@ -282,38 +304,38 @@ int main(int argc, char** argv) {
         }
         if (!has_model) { respond_error(-32003, "no DataModel loaded: call 'datamodel/new' or 'datamodel/load' first"); continue; }
 
-        if (method.rfind("runtime/", 0) == 0) {
-            auto runtime_state = [&]() {
-                Json state = Json::object();
-                state.set("active", Json(runtime_active));
-                if (runtime) {
-                    state.set("time", Json(runtime->time()));
-                    state.set("threads", Json(static_cast<int64_t>(runtime->thread_count())));
-                    Json logs = Json::array();
-                    for (const auto& entry : runtime->logs()) {
-                        Json item = Json::object();
-                        item.set("level", Json(entry.level));
-                        item.set("message", Json(entry.message));
-                        item.set("source", Json(entry.source));
-                        logs.push(std::move(item));
-                    }
-                    state.set("logs", std::move(logs));
-                    Json errors = Json::array();
-                    for (const auto& entry : runtime->errors()) {
-                        Json item = Json::object();
-                        item.set("message", Json(entry.message));
-                        item.set("traceback", Json(entry.traceback));
-                        item.set("source", Json(entry.source));
-                        errors.push(std::move(item));
-                    }
-                    state.set("errors", std::move(errors));
+        auto runtime_state = [&]() {
+            Json state = Json::object();
+            state.set("active", Json(runtime_active));
+            if (runtime) {
+                state.set("time", Json(runtime->time()));
+                state.set("threads", Json(static_cast<int64_t>(runtime->thread_count())));
+                Json logs = Json::array();
+                for (const auto& entry : runtime->logs()) {
+                    Json item = Json::object();
+                    item.set("level", Json(entry.level));
+                    item.set("message", Json(entry.message));
+                    item.set("source", Json(entry.source));
+                    logs.push(std::move(item));
                 }
-                Json calls = Json::array();
-                for (auto& c : outgoing_remotes) calls.push(std::move(c));
-                outgoing_remotes.clear();
-                state.set("remoteCalls", std::move(calls));
-                return state;
-            };
+                state.set("logs", std::move(logs));
+                Json errors = Json::array();
+                for (const auto& entry : runtime->errors()) {
+                    Json item = Json::object();
+                    item.set("message", Json(entry.message));
+                    item.set("traceback", Json(entry.traceback));
+                    item.set("source", Json(entry.source));
+                    errors.push(std::move(item));
+                }
+                state.set("errors", std::move(errors));
+            }
+            Json calls = Json::array();
+            for (auto& c : outgoing_remotes) calls.push(std::move(c));
+            outgoing_remotes.clear();
+            state.set("remoteCalls", std::move(calls));
+            return state;
+        };
+        if (method.rfind("runtime/", 0) == 0) {
             if (method == "runtime/begin") {
                 // Copy the edit model into a fresh runtime model.
                 Json tree = model.snapshot();
@@ -398,6 +420,35 @@ int main(int argc, char** argv) {
             }
             if (method == "runtime/state") {
                 respond(runtime_state());
+                continue;
+            }
+            if (method == "runtime/click" || method == "runtime/hover") {
+                double x = 0, y = 0;
+                uint32_t vw = 1280, vh = 720;
+                if (const Json* v = params.find("x")) x = v->as_double();
+                if (const Json* v = params.find("y")) y = v->as_double();
+                if (const Json* v = params.find("width")) vw = static_cast<uint32_t>(v->as_int(vw));
+                if (const Json* v = params.find("height")) vh = static_cast<uint32_t>(v->as_int(vh));
+                auto hit = method == "runtime/click" ? runtime->gui_click(x, y, vw, vh)
+                                                     : runtime->gui_hover(x, y, vw, vh);
+                Json result = runtime_state();
+                Json hit_json = Json::object();
+                hit_json.set("hit", Json(hit.hit));
+                hit_json.set("path", Json(hit.path));
+                hit_json.set("className", Json(hit.class_name));
+                hit_json.set("event", Json(hit.event));
+                result.set("hit", std::move(hit_json));
+                respond(std::move(result));
+                continue;
+            }
+            if (method == "runtime/typeText") {
+                std::string text;
+                bool submit = false;
+                if (const Json* v = params.find("text")) text = v->as_string();
+                if (const Json* v = params.find("submit")) submit = v->as_bool();
+                Json result = runtime_state();
+                result.set("typed", Json(runtime->gui_type_text(text, submit)));
+                respond(std::move(result));
                 continue;
             }
             if (method == "runtime/keys") {
@@ -846,6 +897,80 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        if (method.rfind("debug/", 0) == 0) {
+            auto debug_json = [&](int frame, bool with_vars) {
+                std::vector<blox::Runtime::DebugVariable> vars;
+                auto status = runtime->debug_status(frame, with_vars ? &vars : nullptr);
+                Json dbg = Json::object();
+                dbg.set("paused", Json(status.paused));
+                dbg.set("finished", Json(status.finished));
+                dbg.set("reason", Json(status.reason));
+                dbg.set("script", Json(status.script));
+                dbg.set("line", Json(static_cast<int64_t>(status.line)));
+                Json stack = Json::array();
+                for (const auto& f : status.stack) {
+                    Json item = Json::object();
+                    item.set("function", Json(f.function));
+                    item.set("source", Json(f.source));
+                    item.set("line", Json(static_cast<int64_t>(f.line)));
+                    stack.push(std::move(item));
+                }
+                dbg.set("stack", std::move(stack));
+                Json variables = Json::array();
+                for (const auto& v : vars) {
+                    Json item = Json::object();
+                    item.set("name", Json(v.name));
+                    item.set("kind", Json(v.kind));
+                    item.set("value", Json(v.value));
+                    variables.push(std::move(item));
+                }
+                dbg.set("variables", std::move(variables));
+                Json result = runtime_state();
+                result.set("debug", std::move(dbg));
+                return result;
+            };
+            if (method == "debug/begin") {
+                std::map<std::string, std::vector<int>> bps;
+                if (const Json* arr = params.find("breakpoints")) {
+                    if (arr->is_array()) {
+                        for (const auto& item : arr->as_array()) {
+                            std::string script;
+                            int line = 0;
+                            if (const Json* sp = item.find("script")) script = sp->as_string();
+                            if (const Json* ln = item.find("line")) line = static_cast<int>(ln->as_int());
+                            if (!script.empty() && line > 0) bps[script].push_back(line);
+                        }
+                    }
+                }
+                runtime->debug_set_breakpoints(bps);
+                runtime->start_scripts();
+                respond(debug_json(0, true));
+                continue;
+            }
+            if (method == "debug/state") {
+                int frame = 0;
+                if (const Json* f = params.find("frame")) frame = static_cast<int>(f->as_int());
+                respond(debug_json(frame, true));
+                continue;
+            }
+            if (method == "debug/resume") {
+                std::string mode = "continue";
+                if (const Json* m = params.find("mode")) mode = m->as_string();
+                if (mode != "continue" && mode != "stepInto" && mode != "stepOver" && mode != "stepOut") {
+                    respond_error(-32602, "debug/resume mode must be continue|stepInto|stepOver|stepOut");
+                    continue;
+                }
+                if (!runtime->debug_resume(mode)) {
+                    respond_error(-32026, "no paused thread to resume");
+                    continue;
+                }
+                respond(debug_json(0, true));
+                continue;
+            }
+            respond_error(-32601, "unknown debug method '" + method + "'");
+            continue;
+        }
+
         if (method.rfind("terrain/", 0) == 0) {
             std::string error;
             Instance* workspace = nullptr;
@@ -901,6 +1026,36 @@ int main(int argc, char** argv) {
                     double radius = 4.0;
                     if (const Json* r = params.find("radius")) radius = r->as_double(radius);
                     terrain_fill_ball(grid, center, radius, static_cast<uint16_t>(material));
+                }
+                if (!terrain_store(model, *target, grid, error)) { respond_error(-32025, error); continue; }
+                Json result = Json::object();
+                result.set("voxels", Json(static_cast<int64_t>(grid.cells.size())));
+                respond(std::move(result));
+                continue;
+            }
+            if (method == "terrain/flatten" || method == "terrain/smooth" || method == "terrain/paint") {
+                auto vec3_param = [&](const char* key, std::array<double, 3>& out) {
+                    const Json* v = params.find(key);
+                    if (!v || !v->is_array() || v->as_array().size() != 3) return false;
+                    out = {v->as_array()[0].as_double(), v->as_array()[1].as_double(), v->as_array()[2].as_double()};
+                    return true;
+                };
+                std::array<double, 3> center{}, size{16, 16, 16};
+                if (!vec3_param("center", center)) { respond_error(-32602, "terrain op needs center [x,y,z]"); continue; }
+                if (!vec3_param("size", size)) { respond_error(-32602, "terrain op needs size [x,y,z]"); continue; }
+                int64_t material = 1280;
+                if (const Json* m = params.find("material")) material = m->as_int(material);
+                Instance* target = ensure_terrain();
+                blox::TerrainGrid grid;
+                if (!terrain_load(*target, grid, error)) { respond_error(-32025, error); continue; }
+                if (method == "terrain/flatten") {
+                    double height = center[1];
+                    if (const Json* h = params.find("height")) height = h->as_double(height);
+                    terrain_flatten(grid, center, size, height, static_cast<uint16_t>(material));
+                } else if (method == "terrain/smooth") {
+                    terrain_smooth(grid, center, size);
+                } else {
+                    terrain_paint(grid, center, size, static_cast<uint16_t>(material));
                 }
                 if (!terrain_store(model, *target, grid, error)) { respond_error(-32025, error); continue; }
                 Json result = Json::object();

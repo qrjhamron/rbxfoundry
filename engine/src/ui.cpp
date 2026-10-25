@@ -206,8 +206,22 @@ struct AtlasPacker {
 
 } // namespace
 
+// Process-lifetime chain cache: layout measures every word of every
+// label (and re-measures during wrap/TextScaled searches), so loading
+// four faces per call dominated text-heavy renders (measured: ~1.5 s
+// per 60-label frame before this cache). Faces are shared read-only
+// apart from pixel size, which is set per call.
+FaceChain& cached_chain(const std::string& font_path) {
+    static thread_local std::map<std::string, FaceChain> cache;
+    auto it = cache.find(font_path);
+    if (it == cache.end()) {
+        it = cache.emplace(font_path, load_chain(font_path)).first;
+    }
+    return it->second;
+}
+
 float measure_text(const std::string& text, float size_px, const std::string& font_path) {
-    FaceChain chain = load_chain(font_path);
+    FaceChain& chain = cached_chain(font_path);
     if (chain.faces.empty()) return 0.0f;
     chain.set_size(size_px);
     FT_Face primary = chain.faces.front();
@@ -225,7 +239,6 @@ float measure_text(const std::string& text, float size_px, const std::string& fo
             width += static_cast<float>(face->glyph->advance.x >> 6);
         }
     }
-    chain.dispose();
     return width;
 }
 
@@ -249,6 +262,16 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
         return &inserted->second;
     };
 
+    // Per-render glyph cache: repeated codepoints (the common case in
+    // real UI text) are rasterized and packed once, then re-emitted.
+    struct CachedGlyph {
+        std::array<float, 4> rect{}; // pixel-space atlas rect
+        float bearing_x = 0, bearing_y = 0, advance = 0;
+        uint32_t w = 0, h = 0;
+        bool empty = false;
+    };
+    std::map<std::tuple<std::string, char32_t, int>, CachedGlyph> glyph_cache;
+
     const size_t first_quad = quads.size();
     for (const TextJob& job : jobs) {
         FaceChain* chain = get_chain(job.font_path);
@@ -259,6 +282,34 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
         float baseline = job.y;
         for (char32_t cp : decode_utf8(job.text)) {
             if (cp == U'\n') continue;
+            auto cache_key = std::make_tuple(job.font_path, cp, static_cast<int>(job.size_px * 4));
+            if (auto cached = glyph_cache.find(cache_key); cached != glyph_cache.end()) {
+                const CachedGlyph& g = cached->second;
+                float gx = pen_x + g.bearing_x;
+                float gy = baseline - g.bearing_y;
+                pen_x += g.advance;
+                if (g.empty) continue;
+                if (gx + g.w < job.clip_x || gx > job.clip_x + job.clip_w ||
+                    gy + g.h < job.clip_y || gy > job.clip_y + job.clip_h) {
+                    continue;
+                }
+                UiQuad quad;
+                quad.x = gx;
+                quad.y = gy;
+                quad.width = static_cast<float>(g.w);
+                quad.height = static_cast<float>(g.h);
+                quad.u0 = g.rect[0] / atlas_w;
+                quad.u1 = g.rect[2] / atlas_w;
+                quad.v0 = g.rect[1];
+                quad.v1 = g.rect[3];
+                quad.color = job.color;
+                quad.use_atlas = true;
+                quad.sort_key = job.sort_key;
+                quad.owner_path = job.owner_path;
+                quad.sequence = job.sequence;
+                quads.push_back(quad);
+                continue;
+            }
             FT_Face face = chain->pick(cp);
             FT_UInt index = 0;
             if (face) {
@@ -277,7 +328,15 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
             float gy = baseline - glyph->bitmap_top;
             pen_x += static_cast<float>(glyph->advance.x >> 6);
             FT_Bitmap& bmp = glyph->bitmap;
-            if (bmp.width == 0 || bmp.rows == 0) continue;
+            if (bmp.width == 0 || bmp.rows == 0) {
+                CachedGlyph g;
+                g.empty = true;
+                g.bearing_x = static_cast<float>(glyph->bitmap_left);
+                g.bearing_y = static_cast<float>(glyph->bitmap_top);
+                g.advance = static_cast<float>(glyph->advance.x >> 6);
+                glyph_cache[cache_key] = g;
+                continue;
+            }
             // Clip: drop glyphs fully outside the clip rect.
             if (gx + bmp.width < job.clip_x || gx > job.clip_x + job.clip_w ||
                 gy + bmp.rows < job.clip_y || gy > job.clip_y + job.clip_h) {
@@ -312,6 +371,16 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
                 continue;
             }
             auto rect = packer.add(coverage, bmp.width, bmp.rows, coverage_pitch);
+            {
+                CachedGlyph g;
+                g.rect = rect;
+                g.bearing_x = static_cast<float>(glyph->bitmap_left);
+                g.bearing_y = static_cast<float>(glyph->bitmap_top);
+                g.advance = static_cast<float>(glyph->advance.x >> 6);
+                g.w = bmp.width;
+                g.h = bmp.rows;
+                glyph_cache[cache_key] = g;
+            }
             UiQuad quad;
             quad.x = gx;
             quad.y = gy;

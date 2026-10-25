@@ -80,6 +80,9 @@ fn run(args: &[String]) -> Result<()> {
         "play" => cmd_play(&global, cmd_args),
         "play-daemon" => cmd_play_daemon(&global, cmd_args),
         "net" => cmd_net(&global, cmd_args),
+        "debug" => cmd_debug(&global, cmd_args),
+        "debug-daemon" => cmd_debug_daemon(&global, cmd_args),
+        "script" => cmd_script(&global, cmd_args),
         "net-daemon" => cmd_net_daemon(&global, cmd_args),
         "terrain" => cmd_terrain(&global, cmd_args),
         "place" => cmd_place(&global, cmd_args),
@@ -101,6 +104,8 @@ fn run(args: &[String]) -> Result<()> {
         "delete" => cmd_delete(&global, cmd_args),
         "reparent" => cmd_reparent(&global, cmd_args),
         "group" => cmd_group(&global, cmd_args),
+        "ungroup" => cmd_ungroup(&global, cmd_args),
+        "exec" => cmd_exec(&global, cmd_args),
         "move" => cmd_move(&global, cmd_args),
         "rotate" => cmd_rotate(&global, cmd_args),
         "scale" => cmd_scale(&global, cmd_args),
@@ -158,6 +163,16 @@ fn print_help() {
          \x20   reparent <file> --target <path> --parent <path>\n\
          \x20   group <file> --targets <a,b,...> [--name <Name>] [--parent <path>]\n\
          \x20       Group instances under a new Model (world transforms preserved).\n\
+         \x20   ungroup <file> --target <path>\n\
+         \x20       Move a container's children to its parent and delete the container.\n\
+         \x20   exec <file> --code <luau>\n\
+         \x20       Studio Command Bar: run Luau in the edit context and commit the result.\n\
+         \x20   script analyze <file.luau | place --target <script>>\n\
+         \x20   script complete <place> --target <script> --line <n> --column <n>\n\
+         \x20       Official Luau frontend diagnostics; reflection-based completion.\n\
+         \x20   debug start|stop <place>; debug breakpoint add|list|clear; debug run|\n\
+         \x20       continue|step-over|step-into|step-out|stack|variables <place>\n\
+         \x20       Real Luau VM debugger sessions (breakpoints, stepping, locals).\n\
          \x20   move <file> --target <path> (--delta 'x,y,z' [--relative] | --position 'x,y,z')\n\
          \x20   rotate <file> --target <path> --angles 'rx,ry,rz' [--world]\n\
          \x20       Degrees, intrinsic XYZ. Models rotate about their pivot.\n\
@@ -377,7 +392,7 @@ fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "input" => {
-            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch"], &["first-person", "third-person"])?;
+            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch", "click", "hover", "type-text", "width", "height"], &["first-person", "third-person", "submit"])?;
             let file = parsed.file()?;
             let keys: Vec<&str> = parsed.opt("keys").unwrap_or("").split(',')
                 .map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
@@ -392,6 +407,52 @@ fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
             }
             if parsed.has("first-person") { request["firstPerson"] = json!(true); }
             if parsed.has("third-person") { request["firstPerson"] = json!(false); }
+            // GUI pointer/text input (Phase 22): resolved against the
+            // runtime GUI layout and fires real Luau GUI signals.
+            let viewport_w: i64 = parsed.opt("width").unwrap_or("1280").parse()
+                .map_err(|_| usage_err("--width must be an integer"))?;
+            let viewport_h: i64 = parsed.opt("height").unwrap_or("720").parse()
+                .map_err(|_| usage_err("--height must be an integer"))?;
+            let parse_xy = |raw: &str, flag: &str| -> Result<(f64, f64)> {
+                let (x, y) = raw.split_once(',')
+                    .ok_or_else(|| usage_err(&format!("{flag} expects 'x,y' in viewport pixels")))?;
+                Ok((
+                    x.trim().parse().map_err(|_| usage_err(&format!("{flag} x must be a number")))?,
+                    y.trim().parse().map_err(|_| usage_err(&format!("{flag} y must be a number")))?,
+                ))
+            };
+            if let Some(click) = parsed.opt("click") {
+                let (x, y) = parse_xy(click, "--click")?;
+                let state = bloxcli::play::send_request(&file, &json!({
+                    "cmd": "gui", "kind": "click", "x": x, "y": y,
+                    "width": viewport_w, "height": viewport_h,
+                }))?;
+                emit(global,
+                     format!("click ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
+                     json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
+                return Ok(());
+            }
+            if let Some(hover) = parsed.opt("hover") {
+                let (x, y) = parse_xy(hover, "--hover")?;
+                let state = bloxcli::play::send_request(&file, &json!({
+                    "cmd": "gui", "kind": "hover", "x": x, "y": y,
+                    "width": viewport_w, "height": viewport_h,
+                }))?;
+                emit(global,
+                     format!("hover ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
+                     json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
+                return Ok(());
+            }
+            if let Some(text) = parsed.opt("type-text") {
+                let state = bloxcli::play::send_request(&file, &json!({
+                    "cmd": "gui", "kind": "typeText", "text": text,
+                    "submit": parsed.has("submit"),
+                }))?;
+                emit(global,
+                     format!("typed text into focused TextBox (submitted: {})", parsed.has("submit")),
+                     json!({"ok": true, "command": "play input", "typed": state["typed"], "state": state}));
+                return Ok(());
+            }
             let state = bloxcli::play::send_request(&file, &request)?;
             emit(global,
                  format!("input {:?} for {duration}s — character at {:?}, {}",
@@ -726,7 +787,7 @@ fn parse_xyz(text: &str, what: &str) -> Result<[f64; 3]> {
 
 fn cmd_terrain(global: &Global, args: &[String]) -> Result<()> {
     let Some((sub, rest)) = args.split_first() else {
-        return Err(usage_err("terrain needs a subcommand: fill|ball|clear|info"));
+        return Err(usage_err("terrain needs a subcommand: fill|ball|flatten|smooth|paint|clear|info"));
     };
     match sub.as_str() {
         "fill" | "ball" => {
@@ -754,6 +815,29 @@ fn cmd_terrain(global: &Global, args: &[String]) -> Result<()> {
             emit(
                 global,
                 format!("terrain {} applied to {} ({} voxels total)", sub, file.display(), result["voxels"]),
+                json!({"ok": true, "command": format!("terrain {sub}"), "path": file.display().to_string(), "result": result}),
+            );
+            Ok(())
+        }
+        "flatten" | "smooth" | "paint" => {
+            let parsed = parse_cmd(rest, &["center", "size", "material", "height"], &[])?;
+            let file = parsed.file()?;
+            let center = parse_xyz(parsed.opt("center").unwrap_or("0,0,0"), "--center")?;
+            let size = parse_xyz(parsed.opt("size").unwrap_or("16,16,16"), "--size")?;
+            let material_name = parsed.opt("material").unwrap_or("Grass");
+            let material: i64 = match material_name.parse::<i64>() {
+                Ok(v) => v,
+                Err(_) => terrain_material_value(material_name)?,
+            };
+            let mut params = json!({"center": center, "size": size, "material": material});
+            if let Some(h) = parsed.opt("height") {
+                params["height"] = json!(h.parse::<f64>().map_err(|_| usage_err("--height must be a number"))?);
+            }
+            let method = format!("terrain/{sub}");
+            let (result, _tree) = mutate(global, &file, |engine| engine.call(&method, params))?;
+            emit(
+                global,
+                format!("terrain {sub} applied to {} ({} voxels total)", file.display(), result["voxels"]),
                 json!({"ok": true, "command": format!("terrain {sub}"), "path": file.display().to_string(), "result": result}),
             );
             Ok(())
@@ -1352,9 +1436,19 @@ fn cmd_add(global: &Global, args: &[String]) -> Result<()> {
 }
 
 fn cmd_set(global: &Global, args: &[String]) -> Result<()> {
-    let parsed = parse_cmd(args, &["target", "property", "value", "type"], &[])?;
+    let parsed = parse_cmd(args, &["target", "targets", "property", "value", "type"], &[])?;
     let file = parsed.file()?;
-    let target = parsed.required("target")?.to_string();
+    // Multi-selection bulk edit: --targets a,b,c applies one typed
+    // property to every listed instance (Phase 21).
+    let targets: Vec<String> = if let Some(list) = parsed.opt("targets") {
+        list.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+    } else {
+        vec![parsed.required("target")?.to_string()]
+    };
+    if targets.is_empty() {
+        return Err(usage_err("set requires --target <path> or --targets <a,b,c>"));
+    }
+    let target = targets[0].clone();
     let property = parsed.required("property")?.to_string();
     let raw_value = parsed.required("value")?.to_string();
 
@@ -1380,17 +1474,19 @@ fn cmd_set(global: &Global, args: &[String]) -> Result<()> {
         }
     };
     let value = parse_value(&type_name, &raw_value, &property)?;
-    engine.set(&target, &property, &value)?;
+    for t in &targets {
+        engine.set(t, &property, &value)?;
+    }
     let tree = engine.snapshot()?;
     engine.shutdown();
     write_mutation(&file, &tree)?;
 
     emit(
         global,
-        format!("set {target}.{property} = {} in {}", value.display(), file.display()),
+        format!("set {}.{property} = {} on {} instance(s) in {}", targets.join(", "), value.display(), targets.len(), file.display()),
         json!({
             "ok": true, "command": "set", "path": file.display().to_string(),
-            "target": target, "property": property, "value": value,
+            "target": target, "targets": targets, "property": property, "value": value,
         }),
     );
     Ok(())
@@ -1479,6 +1575,219 @@ fn cmd_export(global: &Global, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+
+// ---------- Phase 23: script IDE + debugger CLI ----------
+
+fn cmd_debug_daemon(global: &Global, args: &[String]) -> Result<()> {
+    let parsed = parse_cmd(args, &[], &[])?;
+    let place = parsed.file()?;
+    let engine_path = find_engine(global.engine.as_deref())?;
+    bloxcli::debug::run_daemon(&engine_path, &place)
+}
+
+fn place_arg(parsed: &CmdArgs) -> Result<PathBuf> {
+    parsed.file()
+}
+
+fn cmd_debug(global: &Global, args: &[String]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(usage_err("debug needs a subcommand: start|stop|breakpoint|run|continue|step-over|step-into|step-out|stack|variables"));
+    };
+    let sub_args: Vec<String> = rest.to_vec();
+    match sub.as_str() {
+        "start" => {
+            let parsed = parse_cmd(&sub_args, &[], &[])?;
+            let place = place_arg(&parsed)?;
+            let engine_path = find_engine(global.engine.as_deref())?;
+            let state = bloxcli::debug::start_daemon(&engine_path, &place)?;
+            emit(
+                global,
+                format!("debug session started for {} (add breakpoints, then `debug run`)", place.display()),
+                json!({"ok": true, "command": "debug start", "path": place.display().to_string(), "state": state}),
+            );
+            Ok(())
+        }
+        "stop" => {
+            let parsed = parse_cmd(&sub_args, &[], &[])?;
+            let place = place_arg(&parsed)?;
+            let response = bloxcli::debug::send_request(&place, &json!({"cmd": "stop"}))?;
+            emit(
+                global,
+                format!("debug session stopped for {}", place.display()),
+                json!({"ok": true, "command": "debug stop", "path": place.display().to_string(), "response": response}),
+            );
+            Ok(())
+        }
+        "breakpoint" => {
+            // debug breakpoint add <place> <script-path>:<line> | list <place> | clear <place>
+            let Some((action, rest2)) = sub_args.split_first() else {
+                return Err(usage_err("debug breakpoint needs add|list|clear"));
+            };
+            let parsed = parse_cmd(rest2, &[], &[])?;
+            let place = place_arg(&parsed)?;
+            match action.as_str() {
+                "add" => {
+                    let spec = parsed.positional.get(1).cloned()
+                        .filter(|p| p.contains(':'))
+                        .or_else(|| parsed.positional.iter().find(|p| p.contains(':')).cloned())
+                        .ok_or_else(|| usage_err("debug breakpoint add needs <script-path>:<line>"))?;
+                    let (script, line_str) = spec.rsplit_once(':')
+                        .ok_or_else(|| usage_err("breakpoint must be <script-path>:<line>"))?;
+                    let line: i64 = line_str.parse()
+                        .map_err(|_| usage_err("breakpoint line must be a number"))?;
+                    let current = bloxcli::debug::send_request(&place, &json!({"cmd": "breakpoints"}))?;
+                    let mut list = current["breakpoints"].as_array().cloned().unwrap_or_default();
+                    list.push(json!({"script": script, "line": line}));
+                    let response = bloxcli::debug::send_request(&place, &json!({"cmd": "breakpoints", "breakpoints": list}))?;
+                    emit(
+                        global,
+                        format!("breakpoint set at {script}:{line} ({} total)", response["breakpoints"].as_array().map(|a| a.len()).unwrap_or(0)),
+                        json!({"ok": true, "command": "debug breakpoint add", "breakpoints": response["breakpoints"]}),
+                    );
+                    Ok(())
+                }
+                "list" => {
+                    let response = bloxcli::debug::send_request(&place, &json!({"cmd": "breakpoints"}))?;
+                    emit(
+                        global,
+                        format!("{} breakpoint(s)", response["breakpoints"].as_array().map(|a| a.len()).unwrap_or(0)),
+                        json!({"ok": true, "command": "debug breakpoint list", "breakpoints": response["breakpoints"]}),
+                    );
+                    Ok(())
+                }
+                "clear" => {
+                    let response = bloxcli::debug::send_request(&place, &json!({"cmd": "breakpoints", "breakpoints": []}))?;
+                    emit(
+                        global,
+                        "breakpoints cleared".to_string(),
+                        json!({"ok": true, "command": "debug breakpoint clear", "breakpoints": response["breakpoints"]}),
+                    );
+                    Ok(())
+                }
+                other => Err(usage_err(&format!("unknown breakpoint action '{other}' (add|list|clear)"))),
+            }
+        }
+        "run" | "continue" | "step-over" | "step-into" | "step-out" => {
+            let parsed = parse_cmd(&sub_args, &[], &[])?;
+            let place = place_arg(&parsed)?;
+            let request = if sub == "run" {
+                json!({"cmd": "run"})
+            } else {
+                let mode = match sub.as_str() {
+                    "continue" => "continue",
+                    "step-over" => "stepOver",
+                    "step-into" => "stepInto",
+                    _ => "stepOut",
+                };
+                json!({"cmd": "resume", "mode": mode})
+            };
+            let response = bloxcli::debug::send_request(&place, &request)?;
+            if response["ok"] != json!(true) {
+                return Err(Error(format!("debug {sub} failed: {}", response["error"])));
+            }
+            let dbg = &response["state"]["debug"];
+            let summary = if dbg["paused"] == json!(true) {
+                format!("paused at {}:{} ({})", dbg["script"], dbg["line"], dbg["reason"])
+            } else if dbg["finished"] == json!(true) {
+                "execution finished".to_string()
+            } else {
+                "running (no pause hit)".to_string()
+            };
+            emit(
+                global,
+                format!("debug {sub}: {summary}"),
+                json!({"ok": true, "command": format!("debug {sub}"), "path": place.display().to_string(), "state": response["state"]}),
+            );
+            Ok(())
+        }
+        "stack" | "variables" => {
+            let parsed = parse_cmd(&sub_args, &["frame"], &[])?;
+            let place = place_arg(&parsed)?;
+            let frame: i64 = parsed.opt("frame").unwrap_or("0").parse()
+                .map_err(|_| usage_err("--frame must be a number"))?;
+            let response = bloxcli::debug::send_request(&place, &json!({"cmd": "state", "frame": frame}))?;
+            let dbg = &response["state"]["debug"];
+            let items = if sub == "stack" { &dbg["stack"] } else { &dbg["variables"] };
+            emit(
+                global,
+                format!("{} {}(s) at {}:{}", items.as_array().map(|a| a.len()).unwrap_or(0), sub, dbg["script"], dbg["line"]),
+                json!({"ok": true, "command": format!("debug {sub}"), "path": place.display().to_string(), "debug": dbg}),
+            );
+            Ok(())
+        }
+        other => Err(usage_err(&format!("unknown debug subcommand '{other}'"))),
+    }
+}
+
+fn cmd_script(global: &Global, args: &[String]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(usage_err("script needs a subcommand: analyze|complete"));
+    };
+    let sub_args: Vec<String> = rest.to_vec();
+    match sub.as_str() {
+        "analyze" => {
+            let parsed = parse_cmd(&sub_args, &["target", "name"], &[])?;
+            let file = place_arg(&parsed)?;
+            let (source, name) = if file.extension().map(|e| e == "luau" || e == "lua").unwrap_or(false) {
+                let text = std::fs::read_to_string(&file)
+                    .map_err(|e| Error(format!("cannot read {}: {e}", file.display())))?;
+                (text, parsed.opt("name").unwrap_or("Main").to_string())
+            } else {
+                let target = parsed.opt("target")
+                    .ok_or_else(|| usage_err("script analyze on a place requires --target <script path>"))?;
+                let (node, _format) = read_place(&file)?;
+                let script = node.find_path(target).map_err(|e| Error(e.0))?;
+                match script.properties.get("Source") {
+                    Some(PropValue::String(src)) => (src.clone(), target.to_string()),
+                    _ => return Err(Error(format!("'{target}' has no Source to analyze"))),
+                }
+            };
+            let mut engine = spawn_engine(global)?;
+            let result = engine.call("script/analyze", json!({"source": source, "name": name}));
+            engine.shutdown();
+            let result = result?;
+            let diagnostics = result["diagnostics"].clone();
+            let errors = diagnostics.as_array().map(|a| a.iter().filter(|d| d["severity"] == "error").count()).unwrap_or(0);
+            emit(
+                global,
+                format!("{} diagnostic(s), {} error(s) for {}", diagnostics.as_array().map(|a| a.len()).unwrap_or(0), errors, name),
+                json!({"ok": errors == 0, "command": "script analyze", "name": name, "diagnostics": diagnostics}),
+            );
+            if errors > 0 {
+                Err(Error(format!("{errors} error(s) found by the Luau frontend")))
+            } else {
+                Ok(())
+            }
+        }
+        "complete" => {
+            let parsed = parse_cmd(&sub_args, &["target", "line", "column"], &[])?;
+            let file = place_arg(&parsed)?;
+            let target = parsed.opt("target")
+                .ok_or_else(|| usage_err("script complete requires --target <script path>"))?;
+            let line: usize = parsed.opt("line").unwrap_or("1").parse()
+                .map_err(|_| usage_err("--line must be a number"))?;
+            let column: usize = parsed.opt("column").unwrap_or("1").parse()
+                .map_err(|_| usage_err("--column must be a number"))?;
+            let (node, _format) = read_place(&file)?;
+            let script = node.find_path(target).map_err(|e| Error(e.0))?;
+            let source = match script.properties.get("Source") {
+                Some(PropValue::String(src)) => src.clone(),
+                _ => return Err(Error(format!("'{target}' has no Source"))),
+            };
+            let items = bloxcli::completion::completions(&source, line, column, &script.class_name, &node);
+            let json_items: Vec<JsonValue> = items.iter().map(|c| json!({
+                "label": c.label, "kind": c.kind, "detail": c.detail,
+            })).collect();
+            emit(
+                global,
+                format!("{} completion(s) at {target}:{line}:{column}", json_items.len()),
+                json!({"ok": true, "command": "script complete", "target": target, "line": line, "column": column, "completions": json_items}),
+            );
+            Ok(())
+        }
+        other => Err(usage_err(&format!("unknown script subcommand '{other}' (analyze|complete)"))),
+    }
+}
 
 // ---------- Phase 17: model files (.rbxm/.rbxmx) ----------
 
@@ -2262,16 +2571,94 @@ fn cmd_group(global: &Global, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_move(global: &Global, args: &[String]) -> Result<()> {
-    let parsed = parse_cmd(args, &["target", "delta", "position"], &["relative"])?;
+fn cmd_ungroup(global: &Global, args: &[String]) -> Result<()> {
+    let parsed = parse_cmd(args, &["target"], &[])?;
     let file = parsed.file()?;
     let target = parsed.required("target")?.to_string();
+    let parent = target
+        .rsplit_once('/')
+        .map(|(p, _)| p.to_string())
+        .ok_or_else(|| usage_err("ungroup target must be inside a parent (e.g. Workspace/Model)"))?;
+    let (result, _tree) = mutate(global, &file, |engine| {
+        let node = engine.get(&target)?;
+        if node.children.is_empty() {
+            return Err(Error(format!("'{target}' has no children to ungroup")));
+        }
+        let mut moved = 0;
+        for child in &node.children {
+            engine.reparent(&format!("{target}/{}", child.name), &parent)?;
+            moved += 1;
+        }
+        engine.delete(&target)?;
+        Ok(json!({ "moved": moved }))
+    })?;
+    emit(
+        global,
+        format!("ungrouped {} — {} child instance(s) moved to {parent} in {}", target, result["moved"], file.display()),
+        json!({
+            "ok": true, "command": "ungroup", "path": file.display().to_string(),
+            "target": target, "parent": parent, "moved": result["moved"],
+        }),
+    );
+    Ok(())
+}
+
+/// Studio Command Bar equivalent: Luau executed against the EDIT tree
+/// (no players, no playtest lifecycle) whose resulting state is
+/// committed back to the place file. Distinct from `play` sessions.
+fn cmd_exec(global: &Global, args: &[String]) -> Result<()> {
+    let parsed = parse_cmd(args, &["code"], &[])?;
+    let file = parsed.file()?;
+    let code = parsed.required("code")?.to_string();
+    let (mut engine, _format) = load_session(global, &file)?;
+    engine.call("runtime/begin", json!({}))?;
+    let state = engine.call("runtime/eval", json!({"source": code, "name": "command-bar"}))?;
+    let logs = state.get("logs").cloned().unwrap_or_else(|| json!([]));
+    let errors = state.get("errors").cloned().unwrap_or_else(|| json!([]));
+    let snap = engine.call("runtime/snapshot", json!({}))?;
+    let tree_json = snap.get("tree").ok_or_else(|| Error("runtime snapshot missing tree".into()))?;
+    let tree = bloxcli::engine::node_from_value(tree_json)?;
+    engine.shutdown();
+    if errors.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+        return Err(Error(format!("command bar Luau failed (edit tree NOT saved): {errors}")));
+    }
+    write_mutation(&file, &tree)?;
+    emit(
+        global,
+        format!("command bar executed in {} (edit context, committed)", file.display()),
+        json!({
+            "ok": true, "command": "exec", "path": file.display().to_string(),
+            "logs": logs, "instances": tree.count(),
+        }),
+    );
+    Ok(())
+}
+
+fn cmd_move(global: &Global, args: &[String]) -> Result<()> {
+    let parsed = parse_cmd(args, &["target", "delta", "position", "snap"], &["relative"])?;
+    let file = parsed.file()?;
+    let target = parsed.required("target")?.to_string();
+    let snap: f32 = parsed
+        .opt("snap")
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| usage_err("--snap must be a number of studs (0 disables snapping)"))?;
+    if snap < 0.0 {
+        return Err(usage_err("--snap must be >= 0"));
+    }
+    let snap3 = |v: [f32; 3]| -> [f32; 3] {
+        if snap > 0.0 {
+            v.map(|c| (c / snap).round() * snap)
+        } else {
+            v
+        }
+    };
     if parsed.opt("delta").is_none() && parsed.opt("position").is_none() {
         return Err(usage_err("move requires --delta 'x,y,z' (or --position for an absolute BasePart position)"));
     }
     // Absolute positioning is only well-defined for a single BasePart.
     if let Some(position) = parsed.opt("position") {
-        let wanted = parse_vec3(position)?;
+        let wanted = snap3(parse_vec3(position)?);
         let (mut engine, _format) = load_session(global, &file)?;
         let instance = engine.get(&target)?;
         let current = match instance.properties.get("CFrame") {
@@ -2308,7 +2695,7 @@ fn cmd_move(global: &Global, args: &[String]) -> Result<()> {
         );
         return Ok(());
     }
-    let delta = parse_vec3(parsed.opt("delta").unwrap())?;
+    let delta = snap3(parse_vec3(parsed.opt("delta").unwrap())?);
     let relative = parsed.has("relative");
     let (_result, _tree) = mutate(global, &file, |engine| {
         engine.move_by(&target, delta, relative)
@@ -2325,11 +2712,19 @@ fn cmd_move(global: &Global, args: &[String]) -> Result<()> {
 }
 
 fn cmd_rotate(global: &Global, args: &[String]) -> Result<()> {
-    let parsed = parse_cmd(args, &["target", "angles"], &["world"])?;
+    let parsed = parse_cmd(args, &["target", "angles", "snap-angle"], &["world"])?;
     let file = parsed.file()?;
     let target = parsed.required("target")?.to_string();
     let angles_raw = parsed.required("angles")?;
-    let angles = parse_vec3(angles_raw)?;
+    let mut angles = parse_vec3(angles_raw)?;
+    let snap_angle: f32 = parsed
+        .opt("snap-angle")
+        .unwrap_or("0")
+        .parse()
+        .map_err(|_| usage_err("--snap-angle must be a number of degrees (0 disables)"))?;
+    if snap_angle > 0.0 {
+        angles = angles.map(|a| (a / snap_angle).round() * snap_angle);
+    }
     let world = parsed.has("world");
     let (_result, _tree) = mutate(global, &file, |engine| {
         engine.rotate(&target, angles, world)

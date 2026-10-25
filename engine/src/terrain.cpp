@@ -184,6 +184,95 @@ void terrain_fill_ball(TerrainGrid& grid, std::array<double, 3> center, double r
             }
 }
 
+namespace {
+
+void region_bounds(std::array<double, 3> center, std::array<double, 3> size,
+                   int lo[3], int hi[3]) {
+    for (int axis = 0; axis < 3; ++axis) {
+        lo[axis] = static_cast<int>(std::floor((center[axis] - size[axis] / 2.0) / kVoxelSize));
+        hi[axis] = static_cast<int>(std::ceil((center[axis] + size[axis] / 2.0) / kVoxelSize)) - 1;
+    }
+}
+
+} // namespace
+
+void terrain_flatten(TerrainGrid& grid, std::array<double, 3> center,
+                     std::array<double, 3> size, double height, uint16_t material) {
+    int lo[3], hi[3];
+    region_bounds(center, size, lo, hi);
+    // Top solid voxel = the highest voxel whose centre is at/below height.
+    int top_y = static_cast<int>(std::floor(height / kVoxelSize));
+    if (voxel_center(0, top_y, 0)[1] > height) --top_y;
+    for (int x = lo[0]; x <= hi[0]; ++x) {
+        for (int z = lo[2]; z <= hi[2]; ++z) {
+            for (int y = lo[1]; y <= hi[1]; ++y) {
+                if (y <= top_y) {
+                    if (material != 0) grid.cells[{x, y, z}] = {material, 255};
+                } else {
+                    grid.cells.erase({x, y, z});
+                }
+            }
+        }
+    }
+}
+
+void terrain_smooth(TerrainGrid& grid, std::array<double, 3> center,
+                    std::array<double, 3> size) {
+    int lo[3], hi[3];
+    region_bounds(center, size, lo, hi);
+    const TerrainGrid before = grid; // pass reads a stable snapshot
+    for (int x = lo[0]; x <= hi[0]; ++x) {
+        for (int y = lo[1]; y <= hi[1]; ++y) {
+            for (int z = lo[2]; z <= hi[2]; ++z) {
+                int solid = 0;
+                std::map<uint16_t, int> material_votes;
+                for (int dx = -1; dx <= 1; ++dx)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dz = -1; dz <= 1; ++dz) {
+                            if (dx == 0 && dy == 0 && dz == 0) continue;
+                            auto it = before.cells.find({x + dx, y + dy, z + dz});
+                            if (it != before.cells.end() && it->second.second > 0) {
+                                ++solid;
+                                ++material_votes[it->second.first];
+                            }
+                        }
+                auto self = before.cells.find({x, y, z});
+                bool self_solid = self != before.cells.end() && self->second.second > 0;
+                // Majority rule over the 26-neighbourhood; a solid voxel
+                // needs only 9 supporters to survive (hysteresis keeps
+                // smoothing from eroding thin features immediately).
+                bool becomes_solid = self_solid ? solid >= 9 : solid >= 14;
+                if (becomes_solid) {
+                    uint16_t material = self_solid ? self->second.first : 1280;
+                    int best_votes = -1;
+                    for (const auto& [mat, votes] : material_votes) {
+                        if (votes > best_votes) { best_votes = votes; material = mat; }
+                    }
+                    grid.cells[{x, y, z}] = {material, 255};
+                } else {
+                    grid.cells.erase({x, y, z});
+                }
+            }
+        }
+    }
+}
+
+void terrain_paint(TerrainGrid& grid, std::array<double, 3> center,
+                   std::array<double, 3> size, uint16_t material) {
+    int lo[3], hi[3];
+    region_bounds(center, size, lo, hi);
+    for (int x = lo[0]; x <= hi[0]; ++x) {
+        for (int y = lo[1]; y <= hi[1]; ++y) {
+            for (int z = lo[2]; z <= hi[2]; ++z) {
+                auto it = grid.cells.find({x, y, z});
+                if (it == grid.cells.end()) continue;
+                if (material == 0) grid.cells.erase(it);
+                else it->second.first = material;
+            }
+        }
+    }
+}
+
 std::array<float, 3> terrain_material_color(uint16_t material) {
     switch (material) {
         case 1280: return {0.35f, 0.62f, 0.25f};  // Grass

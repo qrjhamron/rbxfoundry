@@ -79,7 +79,7 @@ struct Thread {
     double wake = 0.0;
     double slept_at = 0.0;
     uint64_t ready_step = 0;
-    enum class Wait { None, Time, Signal } wait = Wait::None;
+    enum class Wait { None, Time, Signal, Debug } wait = Wait::None;
     SignalImpl* waiting_on = nullptr;
     std::string owner;
     std::vector<LuaArg> resume_args;
@@ -135,6 +135,25 @@ struct Runtime::Impl {
         std::vector<Instance*> driven; // Motor6Ds this track last wrote
     };
     std::vector<std::unique_ptr<AnimTrackState>> anim_tracks;
+    // Phase 23 debugger state.
+    bool debug_mode = false;
+    std::map<std::string, std::set<int>> debug_breakpoints; // script path -> lines
+    Thread* debug_paused_thread = nullptr;
+    // Phase 22 GUI pointer state.
+    Instance* gui_focused_textbox = nullptr;
+    Instance* gui_hovered = nullptr;
+    std::string debug_pause_reason;
+    int debug_step_mode = 0; // 0 none, 1 into, 2 over, 3 out
+    int debug_step_depth = 0;
+    int debug_step_line = -1;
+    bool debug_step_hit = false;
+    bool debug_break_hit = false;
+    int debug_pause_line = 0;
+    std::string debug_pause_script;
+    int debug_reenable_line = 0;
+    int debug_reenable_ref = 0;
+    Thread* debug_reenable_thread = nullptr;
+    Thread* debug_paused_candidate = nullptr;
     // PathfindingService paths (Phase 14).
     struct PathState {
         std::vector<std::array<double, 3>> waypoints;
@@ -533,6 +552,7 @@ Json json_arr(std::initializer_list<Json> items) {
 }
 
 LuaArg arg_number(double v) { LuaArg a; a.kind = 2; a.num = v; return a; }
+LuaArg arg_bool(bool v) { LuaArg a; a.kind = 1; a.b = v; return a; }
 LuaArg arg_string(const std::string& v) { LuaArg a; a.kind = 3; a.str = v; return a; }
 LuaArg arg_instance(Instance* v) { LuaArg a; a.kind = 4; a.inst = v; return a; }
 
@@ -1025,7 +1045,11 @@ int inst_index(lua_State* L) {
     if (key == "Changed" || key == "ChildAdded" || key == "ChildRemoved" || key == "AncestryChanged" ||
         key == "Destroying" || key == "Died" || key == "OnServerEvent" ||
         key == "OnClientEvent" || key == "CharacterAdded" || key == "CharacterRemoving" ||
-        key == "Touched" || key == "TouchEnded" || key == "StateChanged") {
+        key == "Touched" || key == "TouchEnded" || key == "StateChanged" ||
+        // GUI events (Phase 22), fired by Runtime::gui_click/gui_hover/
+        // gui_type_text against the runtime model's own layout.
+        key == "MouseButton1Click" || key == "MouseButton2Click" || key == "Activated" ||
+        key == "MouseEnter" || key == "MouseLeave" || key == "Focused" || key == "FocusLost") {
         push_signal(L, rt->impl_->instance_signal(rt, inst, key));
         return 1;
     }
@@ -3335,6 +3359,104 @@ int enumitem_eq(lua_State* L) {
 
 // --------------------------------------------------------------- scheduler --
 
+// ------------------------------------------------------------- debugger --
+namespace {
+
+// The engine process is single-threaded and debugs one Runtime at a
+// time; the VM debugstep callback reaches it through this pointer.
+Runtime* g_debug_runtime = nullptr;
+
+void debug_reenable_breakpoint(Runtime* rt, Thread* t); // fwd
+
+void debug_break_hook(lua_State* L, lua_Debug*) {
+    // LOP_BREAK re-executes the original instruction after this hook;
+    // pausing is the hook's job: yield the thread and let
+    // resume_thread convert the yield into the paused state. The
+    // location is captured here, inside the hook, where lua_getinfo
+    // still reports the breakpoint's own line (after the yield, the
+    // saved pc reads as the previous instruction).
+    if (g_debug_runtime) {
+        lua_Debug info;
+        if (lua_getinfo(L, 0, "sl", &info)) {
+            g_debug_runtime->impl_->debug_pause_line = info.currentline;
+            g_debug_runtime->impl_->debug_pause_script = info.source ? info.source : "";
+        }
+        g_debug_runtime->impl_->debug_break_hit = true;
+        lua_yield(L, 0);
+    }
+}
+
+void debug_step_hook(lua_State* L, lua_Debug*) {
+    Runtime* rt = g_debug_runtime;
+    if (!rt || !rt->impl_->debug_paused_candidate) return;
+    if (rt->impl_->debug_paused_candidate->co != L) return;
+    if (rt->impl_->debug_step_mode == 0) return;
+    lua_Debug info;
+    if (!lua_getinfo(L, 0, "sl", &info)) return;
+    const int depth = lua_stackdepth(L);
+    if (rt->impl_->debug_reenable_line && rt->impl_->debug_reenable_thread &&
+        rt->impl_->debug_reenable_thread->co == L &&
+        info.currentline != rt->impl_->debug_reenable_line) {
+        debug_reenable_breakpoint(rt, rt->impl_->debug_reenable_thread);
+    }
+    if (rt->impl_->debug_step_mode == 4) {
+        // Skip-once: run past the breakpoint instruction we just
+        // resumed from, then hand control back to normal execution.
+        if (info.currentline != rt->impl_->debug_step_line || depth != rt->impl_->debug_step_depth) {
+            rt->impl_->debug_step_mode = 0;
+            rt->impl_->debug_paused_candidate = nullptr;
+            lua_singlestep(L, 0);
+        }
+        return;
+    }
+    bool hit = false;
+    if (rt->impl_->debug_step_mode == 1) {
+        hit = info.currentline != rt->impl_->debug_step_line;
+    } else if (rt->impl_->debug_step_mode == 2) {
+        hit = depth <= rt->impl_->debug_step_depth && info.currentline != rt->impl_->debug_step_line;
+    } else if (rt->impl_->debug_step_mode == 3) {
+        hit = depth < rt->impl_->debug_step_depth;
+    }
+    if (hit) {
+        rt->impl_->debug_pause_line = info.currentline;
+        rt->impl_->debug_pause_script = info.source ? info.source : "";
+        rt->impl_->debug_step_hit = true;
+        lua_yield(L, 0); // supported: VM lets the hook yield the thread
+    }
+}
+
+// Re-enables a breakpoint that was temporarily disabled so a resume
+// could step past it (the BREAK instruction would otherwise re-fire
+// immediately after the hook yields).
+void debug_reenable_breakpoint_impl(Runtime* rt, Thread* t) {
+    if (!rt->impl_->debug_reenable_line || rt->impl_->debug_reenable_thread != t) return;
+    lua_State* co = t->co;
+    lua_rawgeti(co, LUA_REGISTRYINDEX, rt->impl_->debug_reenable_ref);
+    if (lua_isfunction(co, -1)) lua_breakpoint(co, -1, rt->impl_->debug_reenable_line, 1);
+    lua_pop(co, 1);
+    lua_unref(co, rt->impl_->debug_reenable_ref);
+    rt->impl_->debug_reenable_line = 0;
+    rt->impl_->debug_reenable_ref = 0;
+    rt->impl_->debug_reenable_thread = nullptr;
+}
+
+void debug_reenable_breakpoint(Runtime* rt, Thread* t) {
+    debug_reenable_breakpoint_impl(rt, t);
+}
+
+std::string debug_format_value(lua_State* L, int idx) {
+    std::string error;
+    Json v = lua_value_to_json(L, idx, 1, error);
+    if (error.empty()) {
+        std::string text = v.dump();
+        if (text.size() > 160) text = text.substr(0, 157) + "...";
+        return text;
+    }
+    return std::string("<") + lua_typename(L, lua_type(L, idx)) + ">";
+}
+
+} // namespace
+
 bool resume_thread(Runtime* rt, Thread* t) {
     lua_State* L = rt->state();
     lua_State* co = t->co;
@@ -3355,7 +3477,35 @@ bool resume_thread(Runtime* rt, Thread* t) {
     rt->impl_->current_owner = t->owner;
     rt->impl_->interrupts = 0;
     int status = lua_resume(co, L, nargs);
+    if (status == LUA_YIELD && rt->impl_->debug_break_hit) {
+        rt->impl_->debug_break_hit = false;
+        rt->impl_->debug_paused_thread = t;
+        rt->impl_->debug_pause_reason = "breakpoint";
+        rt->impl_->debug_step_mode = 0;
+        t->wait = Thread::Wait::Debug;
+        return false;
+    }
+    if (status == LUA_BREAK) {
+        // Hit a lua_breakpoint: freeze this thread for the debugger.
+        rt->impl_->debug_paused_thread = t;
+        rt->impl_->debug_pause_reason = "breakpoint";
+        rt->impl_->debug_step_mode = 0;
+        t->wait = Thread::Wait::Debug;
+        return false;
+    }
+    if (status == LUA_YIELD && rt->impl_->debug_step_hit &&
+        rt->impl_->debug_paused_candidate == t) {
+        rt->impl_->debug_step_hit = false;
+        rt->impl_->debug_paused_candidate = nullptr;
+        lua_singlestep(co, 0);
+        rt->impl_->debug_paused_thread = t;
+        rt->impl_->debug_pause_reason = "step";
+        rt->impl_->debug_step_mode = 0;
+        t->wait = Thread::Wait::Debug;
+        return false;
+    }
     if (status == LUA_OK) {
+        debug_reenable_breakpoint(rt, t);
         t->dead = true;
         lua_unref(L, t->co_ref);
         return true;
@@ -3391,7 +3541,7 @@ void process_threads(Runtime* rt) {
         bool progress = false;
         for (size_t i = 0; i < threads.size(); ++i) {
             Thread* t = threads[i].get();
-            if (t->dead || t->wait == Thread::Wait::Signal) continue;
+            if (t->dead || t->wait == Thread::Wait::Signal || t->wait == Thread::Wait::Debug) continue;
             if (t->wake <= rt->time() && t->ready_step <= rt->impl_->step_index) {
                 resume_thread(rt, t);
                 progress = true;
@@ -4029,6 +4179,15 @@ bool Runtime::start_scripts() {
             t->dead = true;
             return;
         }
+        if (impl_->debug_mode) {
+            // Breakpoints apply to the script's main chunk function
+            // (the closure luau_load just left on the stack). Nested
+            // function bodies are reached with step-into.
+            auto it = impl_->debug_breakpoints.find(path);
+            if (it != impl_->debug_breakpoints.end()) {
+                for (int line : it->second) lua_breakpoint(t->co, -1, line, 1);
+            }
+        }
         resume_thread(this, t);
     };
     if (impl_->net_context == NetContext::Client) {
@@ -4041,6 +4200,146 @@ bool Runtime::start_scripts() {
     } else {
         for (const Found& f : server) start_one(f.inst);
         for (const Found& f : client) start_one(f.inst);
+    }
+    return true;
+}
+
+void Runtime::debug_set_breakpoints(const std::map<std::string, std::vector<int>>& breakpoints) {
+    impl_->debug_breakpoints.clear();
+    for (const auto& [script, lines] : breakpoints) {
+        impl_->debug_breakpoints[script] = std::set<int>(lines.begin(), lines.end());
+    }
+    impl_->debug_mode = true;
+    lua_Callbacks* cb = lua_callbacks(L_);
+    cb->debugbreak = &debug_break_hook;
+    cb->debugstep = &debug_step_hook;
+    g_debug_runtime = this;
+}
+
+Runtime::DebugStatus Runtime::debug_status(int frame, std::vector<DebugVariable>* variables) const {
+    DebugStatus out;
+    Thread* paused = impl_->debug_paused_thread;
+    out.paused = paused != nullptr;
+    out.reason = impl_->debug_pause_reason;
+    bool any_alive = false;
+    for (const auto& t : impl_->threads) {
+        if (!t->dead) any_alive = true;
+    }
+    out.finished = !any_alive && !out.paused;
+    if (!paused) return out;
+    lua_State* co = paused->co;
+    for (int level = 0; level < 64; ++level) {
+        lua_Debug info;
+        if (!lua_getinfo(co, level, "nsl", &info)) break;
+        DebugFrame f;
+        f.function = info.name ? info.name : "?";
+        f.source = info.source ? info.source : "";
+        if (!f.source.empty() && f.source[0] == '=') f.source = f.source.substr(1);
+        f.line = info.currentline;
+        out.stack.push_back(std::move(f));
+    }
+    if (!out.stack.empty()) {
+        out.script = out.stack[0].source;
+        out.line = out.stack[0].line;
+    }
+    if (impl_->debug_pause_line > 0) {
+        // Location captured inside the hook at the moment of the pause
+        // (the post-yield stack walk reads the previous instruction).
+        out.line = impl_->debug_pause_line;
+        std::string script = impl_->debug_pause_script;
+        if (!script.empty() && script[0] == '=') script = script.substr(1);
+        if (!script.empty()) out.script = script;
+        if (!out.stack.empty()) out.stack[0].line = impl_->debug_pause_line;
+    }
+    if (variables) {
+        // Locals of the requested frame.
+        for (int i = 1; i < 256; ++i) {
+            const char* name = lua_getlocal(co, frame, i);
+            if (!name) break;
+            DebugVariable var;
+            var.name = name;
+            var.kind = "local";
+            var.value = debug_format_value(co, -1);
+            lua_pop(co, 1);
+            variables->push_back(std::move(var));
+        }
+        // Upvalues of the frame's function.
+        lua_Debug info;
+        if (lua_getinfo(co, frame, "f", &info)) {
+            for (int i = 1; i < 256; ++i) {
+                const char* name = lua_getupvalue(co, -1, i);
+                if (!name) break;
+                DebugVariable var;
+                var.name = name;
+                var.kind = "upvalue";
+                var.value = debug_format_value(co, -1);
+                lua_pop(co, 1);
+                variables->push_back(std::move(var));
+            }
+            lua_pop(co, 1); // the function
+        }
+    }
+    return out;
+}
+
+bool Runtime::debug_resume(const std::string& mode) {
+    Thread* t = impl_->debug_paused_thread;
+    if (!t) return false;
+    const bool from_breakpoint = impl_->debug_pause_reason == "breakpoint";
+    const int pause_line = impl_->debug_pause_line;
+    if (from_breakpoint && pause_line > 0) {
+        // Temporarily disable the breakpoint we are sitting on (the
+        // BREAK instruction re-fires on resume); the step hook
+        // re-enables it once execution leaves this line.
+        lua_Debug info;
+        if (lua_getinfo(t->co, 0, "f", &info) && lua_isfunction(t->co, -1)) {
+            lua_breakpoint(t->co, -1, pause_line, 0);
+            impl_->debug_reenable_ref = lua_ref(t->co, -1);
+            impl_->debug_reenable_line = pause_line;
+            impl_->debug_reenable_thread = t;
+        }
+        lua_pop(t->co, 1);
+    }
+    impl_->debug_paused_thread = nullptr;
+    impl_->debug_pause_reason.clear();
+    impl_->debug_pause_line = 0;
+    impl_->debug_pause_script.clear();
+    t->wait = Thread::Wait::None;
+    if (mode == "continue" && from_breakpoint) {
+        // Skip-once: single-step until execution leaves the breakpoint
+        // line, so the same BREAK does not immediately re-pause.
+        impl_->debug_step_mode = 4;
+        impl_->debug_step_depth = lua_stackdepth(t->co);
+        impl_->debug_step_line = pause_line;
+        impl_->debug_step_hit = false;
+        impl_->debug_paused_candidate = t;
+        lua_singlestep(t->co, 1);
+    } else if (mode == "continue") {
+        impl_->debug_step_mode = 0;
+        lua_singlestep(t->co, 0);
+    } else {
+        impl_->debug_step_mode = mode == "stepInto" ? 1 : mode == "stepOver" ? 2 : 3;
+        impl_->debug_step_depth = lua_stackdepth(t->co);
+        // Compare against the line captured inside the hook at pause
+        // time; a post-yield stack walk reads the previous instruction.
+        if (pause_line > 0) {
+            impl_->debug_step_line = pause_line;
+        } else {
+            lua_Debug info;
+            impl_->debug_step_line = lua_getinfo(t->co, 0, "l", &info) ? info.currentline : -1;
+        }
+        impl_->debug_step_hit = false;
+        impl_->debug_paused_candidate = t;
+        lua_singlestep(t->co, 1);
+    }
+    resume_thread(this, t);
+    process_threads(this);
+    if (impl_->debug_step_mode != 0 && !impl_->debug_paused_thread) {
+        // Stepping ended without another pause (thread finished or
+        // yielded for time/signal): stop single-stepping.
+        impl_->debug_step_mode = 0;
+        impl_->debug_paused_candidate = nullptr;
+        lua_singlestep(t->co, 0);
     }
     return true;
 }
@@ -4109,6 +4408,124 @@ void Runtime::set_key_state(const std::string& key_name, bool down) {
     }
     fire_bound_actions(this, L_, key_name, down);
     process_threads(this);
+}
+
+namespace {
+
+bool rect_contains(const UiRect& r, double x, double y) {
+    return r.visible && x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+}
+
+} // namespace
+
+Runtime::GuiHit Runtime::gui_click(double x, double y, uint32_t viewport_w, uint32_t viewport_h) {
+    GuiHit out;
+    UiOptions options;
+    options.width = viewport_w;
+    options.height = viewport_h;
+    UiScene scene = build_ui_scene(model_, options);
+    // Topmost interactive element: highest render order wins.
+    const UiRect* best = nullptr;
+    for (const UiRect& rect : scene.rects) {
+        if (!rect_contains(rect, x, y)) continue;
+        if (rect.class_name != "TextButton" && rect.class_name != "ImageButton" &&
+            rect.class_name != "TextBox") {
+            continue;
+        }
+        if (!best || rect.order > best->order) best = &rect;
+    }
+    if (!best) {
+        if (impl_->gui_focused_textbox) {
+            fire_instance_signal(this, L_, impl_->gui_focused_textbox, "FocusLost",
+                                 {arg_bool(false)});
+            impl_->gui_focused_textbox = nullptr;
+            process_threads(this);
+        }
+        return out;
+    }
+    std::string error;
+    Instance* inst = model_.resolve_path(best->path, error);
+    if (!inst) return out;
+    out.hit = true;
+    out.path = best->path;
+    out.class_name = best->class_name;
+    if (best->class_name == "TextBox") {
+        if (impl_->gui_focused_textbox && impl_->gui_focused_textbox != inst) {
+            fire_instance_signal(this, L_, impl_->gui_focused_textbox, "FocusLost",
+                                 {arg_bool(false)});
+        }
+        impl_->gui_focused_textbox = inst;
+        fire_instance_signal(this, L_, inst, "Focused", {});
+        out.event = "Focused";
+    } else {
+        if (impl_->gui_focused_textbox) {
+            fire_instance_signal(this, L_, impl_->gui_focused_textbox, "FocusLost",
+                                 {arg_bool(false)});
+            impl_->gui_focused_textbox = nullptr;
+        }
+        fire_instance_signal(this, L_, inst, "MouseButton1Click", {});
+        fire_instance_signal(this, L_, inst, "Activated", {});
+        out.event = "MouseButton1Click";
+    }
+    process_threads(this);
+    return out;
+}
+
+Runtime::GuiHit Runtime::gui_hover(double x, double y, uint32_t viewport_w, uint32_t viewport_h) {
+    GuiHit out;
+    UiOptions options;
+    options.width = viewport_w;
+    options.height = viewport_h;
+    UiScene scene = build_ui_scene(model_, options);
+    const UiRect* best = nullptr;
+    for (const UiRect& rect : scene.rects) {
+        if (!rect_contains(rect, x, y)) continue;
+        if (!best || rect.order > best->order) best = &rect;
+    }
+    Instance* inst = nullptr;
+    if (best) {
+        std::string error;
+        inst = model_.resolve_path(best->path, error);
+    }
+    if (inst == impl_->gui_hovered) {
+        if (inst) {
+            out.hit = true;
+            out.path = model_.path_of(*inst);
+            out.class_name = inst->class_name;
+        }
+        return out;
+    }
+    if (impl_->gui_hovered) {
+        fire_instance_signal(this, L_, impl_->gui_hovered, "MouseLeave", {});
+        out.event = "MouseLeave";
+    }
+    impl_->gui_hovered = inst;
+    if (inst) {
+        fire_instance_signal(this, L_, inst, "MouseEnter", {});
+        out.event = "MouseEnter";
+        out.hit = true;
+        out.path = model_.path_of(*inst);
+        out.class_name = inst->class_name;
+    }
+    process_threads(this);
+    return out;
+}
+
+bool Runtime::gui_type_text(const std::string& text, bool submit) {
+    Instance* box = impl_->gui_focused_textbox;
+    if (!box) return false;
+    std::string error;
+    Variant value;
+    value.type = ValueType::String;
+    value.string_value = text;
+    if (!model_.set_property(*box, "Text", value, error)) return false;
+    fire_changed(this, L_, box, "Text");
+    if (submit) {
+        fire_instance_signal(this, L_, box, "FocusLost", {arg_bool(true)});
+        impl_->gui_focused_textbox = nullptr;
+    }
+    process_threads(this);
+    return true;
 }
 
 void Runtime::step(double dt) {

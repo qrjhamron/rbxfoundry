@@ -250,6 +250,18 @@ fn compatibility_suite() {
            "blox imagediff: MAE/RMSE/diff-fraction metrics + heatmap PNGs from the engine (tests/phase18.rs)".into());
     record("typography.unicode", "visual", "PARTIAL",
            "UTF-8 codepoint text rendering + fallback chain + uncovered-codepoint warnings; no HarfBuzz shaping (unavailable offline), colour emoji drawn as coverage (tests/phase19.rs)".into());
+    record("studio.toolset", "data", "INTERNAL_VERIFIED",
+           "ungroup, bulk set, snapping, command-bar exec, terrain flatten/smooth/paint (tests/phase21.rs)".into());
+    record("ui.gui_events", "runtime", "INTERNAL_VERIFIED",
+           "MouseButton1Click/hover/TextBox events fire into LocalScripts in play sessions (tests/phase22.rs)".into());
+    record("tooling.luau_analyze", "runtime", "INTERNAL_VERIFIED",
+           "script analyze via official Luau Frontend (syntax/type/lint) (tests/phase23.rs)".into());
+    record("tooling.luau_debugger", "runtime", "INTERNAL_VERIFIED",
+           "debug sessions: lua_breakpoint + single-step + stack/locals (tests/phase23.rs)".into());
+    record("stability.corrupt_inputs", "data", "INTERNAL_VERIFIED",
+           "corrupt/truncated places and bad textures fail loudly; 3000-instance place; restart cycles (tests/phase24.rs)".into());
+    record("stability.sanitizers", "data", "INTERNAL_VERIFIED",
+           "C++ suites pass under AddressSanitizer + UBSan (-fsanitize=address,undefined, leak detection off) (ctest in a sanitizer build tree)".into());
     record("physics.collision_groups", "physics", "INTERNAL_VERIFIED",
            "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)".into());
 

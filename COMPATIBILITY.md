@@ -202,6 +202,21 @@ Studio comparison and none is claimed to be.
 | Release packaging | INTERNAL_VERIFIED | `scripts/package-release.sh` builds a self-contained tarball (release binaries, bundled DejaVu fonts, examples); `.github/workflows/ci.yml` builds+tests+packages on Ubuntu. Verified by extracting the tarball and rendering with it |
 | Benchmarks | INTERNAL_VERIFIED | `scripts/bench.sh`; results in `docs/BENCHMARKS.md` (machine-specific, software Vulkan) |
 
+## Phase 21-24 additions (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Studio toolset: ungroup, bulk `--targets` set, move/rotate snapping, command-bar `exec` | INTERNAL_VERIFIED | `phase21.rs`; MCP gains `instance_ungroup` |
+| Terrain editor ops (flatten/smooth/paint) | INTERNAL_VERIFIED | Voxel ops on the real grid, serialization unchanged (`phase21.rs`) |
+| CSG (Union/Negate/Separate) | UNSUPPORTED | No CSG implementation; UnionOperation instances are preserved as data but produce no geometry. Not faked |
+| GUI events in play (MouseButton1Click/Activated, MouseEnter/Leave, TextBox Focused/FocusLost + typing) | INTERNAL_VERIFIED | Fired from `play input --click/--hover/--type-text` resolved against the runtime model's own layout; LocalScript handlers verified end-to-end (`phase22.rs`). Hover/click use viewport coordinates of the 1280x720 play view unless `--width/--height` given |
+| UI builder fixtures (HUD/inventory/shop/settings/mobile) | INTERNAL_VERIFIED | Built, rendered, validated and exported via CLI (`phase22.rs`) |
+| Luau script analysis (`script analyze`) | INTERNAL_VERIFIED | Official Luau Frontend (new solver): syntax/type errors + lint with spans; Roblox globals declared as `any` (`phase23.rs`) |
+| Luau completion (`script complete`) | PARTIAL | Reflection-database symbols: classes, services, properties with types, enums; receivers resolved for `game`, `workspace`, `script`, GetService/Instance.new bindings. No full type inference |
+| Luau debugger (`debug ...`) | INTERNAL_VERIFIED | Real VM debugging: `lua_breakpoint` on script main chunks, `lua_singlestep` step into/over/out, stack + locals/upvalues via `lua_getinfo`/`lua_getlocal`. Breakpoints inside nested functions are reached via step-into (breakpoint lines apply to the main chunk) (`phase23.rs`) |
+| Text layout performance | INTERNAL_VERIFIED | Font-chain cache + per-render glyph cache: 60-label text-heavy UI render 1.5 s -> ~0.55 s per render on this host (measured, incl. process startup) |
+| Stability | INTERNAL_VERIFIED | Corrupt/truncated RBXL/RBXLX and non-PNG textures fail loudly; 3000-instance place validates/renders; 15x engine restart cycles (`phase24.rs`) |
+
 ## Tooling
 
 | Area | Status | Notes |

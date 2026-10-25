@@ -50,6 +50,19 @@ void terrain_fill_block(TerrainGrid& grid, std::array<double, 3> center,
 void terrain_fill_ball(TerrainGrid& grid, std::array<double, 3> center, double radius,
                        uint16_t material);
 
+// Studio Terrain Editor operations (Phase 21), all in voxel space:
+// flatten: level the region's columns to `height` (world Y) — material
+// fills below, air above. smooth: one cellular pass (a voxel becomes
+// solid when most of its 26 neighbours are solid, taking the majority
+// material; otherwise it is removed). paint: replace the material of
+// solid voxels in the region (material 0 erases, like fill).
+void terrain_flatten(TerrainGrid& grid, std::array<double, 3> center,
+                     std::array<double, 3> size, double height, uint16_t material);
+void terrain_smooth(TerrainGrid& grid, std::array<double, 3> center,
+                    std::array<double, 3> size);
+void terrain_paint(TerrainGrid& grid, std::array<double, 3> center,
+                   std::array<double, 3> size, uint16_t material);
+
 // sRGB colour used to render a terrain material (documented palette:
 // these are BloxCLI's approximations, not Studio's textures).
 std::array<float, 3> terrain_material_color(uint16_t material);

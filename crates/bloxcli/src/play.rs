@@ -285,6 +285,31 @@ impl Daemon {
                 let keys = self.held_keys.clone();
                 Ok((self.apply_keys(&keys, steps)?, false))
             }
+            "gui" => {
+                // Pointer/text input against the runtime GUI (Phase 22).
+                let kind = request.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let width = request.get("width").and_then(|v| v.as_i64()).unwrap_or(1280);
+                let height = request.get("height").and_then(|v| v.as_i64()).unwrap_or(720);
+                let result = match kind {
+                    "click" => self.engine.call("runtime/click", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "width": width, "height": height,
+                    }))?,
+                    "hover" => self.engine.call("runtime/hover", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "width": width, "height": height,
+                    }))?,
+                    "typeText" => self.engine.call("runtime/typeText", json!({
+                        "text": request.get("text").cloned().unwrap_or(json!("")),
+                        "submit": request.get("submit").cloned().unwrap_or(json!(false)),
+                    }))?,
+                    other => return err(format!("unknown gui input kind '{other}'")),
+                };
+                self.absorb_logs(&result);
+                Ok((result, false))
+            }
             "input" => {
                 if let Some(yaw) = request.get("yawDeg").and_then(|v| v.as_f64()) {
                     self.yaw = yaw.to_radians();

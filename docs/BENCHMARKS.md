@@ -22,3 +22,21 @@ frame at ~305-350 ms/frame on this machine (`perf.render_800x600` in
 Studio baseline exists for comparison).
 
 Reproduce: `./scripts/build.sh && ./scripts/bench.sh`
+
+## Text layout optimization (Phase 21-24 session)
+
+Measured on the same host with a 60-`TextLabel` text-heavy GUI
+(1,280x720 `ui render`, wall time for 3 renders incl. process
+startup):
+
+| Build | 3 renders |
+| --- | --- |
+| Before (faces reloaded per measure call) | 4.50 s |
+| + font-chain cache | 1.87 s |
+| + per-render glyph cache | 1.64 s |
+
+Profile first, optimize second: `measure_text` reloaded four
+FreeType faces on every call, and layout calls it per word per
+wrap/TextScaled iteration. The caches are process-lifetime
+(font chains) and per-render (glyph atlas entries); output is
+unchanged (phase16/phase22/visual suites re-verified).

@@ -32,7 +32,7 @@
     },
     {
       "area": "visual",
-      "evidence": "308 ms/frame on this machine (software Vulkan); no Studio baseline",
+      "evidence": "456 ms/frame on this machine (software Vulkan); no Studio baseline",
       "id": "perf.render_800x600",
       "status": "PARTIAL"
     },
@@ -109,6 +109,42 @@
       "status": "PARTIAL"
     },
     {
+      "area": "data",
+      "evidence": "ungroup, bulk set, snapping, command-bar exec, terrain flatten/smooth/paint (tests/phase21.rs)",
+      "id": "studio.toolset",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "MouseButton1Click/hover/TextBox events fire into LocalScripts in play sessions (tests/phase22.rs)",
+      "id": "ui.gui_events",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "script analyze via official Luau Frontend (syntax/type/lint) (tests/phase23.rs)",
+      "id": "tooling.luau_analyze",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "debug sessions: lua_breakpoint + single-step + stack/locals (tests/phase23.rs)",
+      "id": "tooling.luau_debugger",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "corrupt/truncated places and bad textures fail loudly; 3000-instance place; restart cycles (tests/phase24.rs)",
+      "id": "stability.corrupt_inputs",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "C++ suites pass under AddressSanitizer + UBSan (-fsanitize=address,undefined, leak detection off) (ctest in a sanitizer build tree)",
+      "id": "stability.sanitizers",
+      "status": "INTERNAL_VERIFIED"
+    },
+    {
       "area": "physics",
       "evidence": "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)",
       "id": "physics.collision_groups",
@@ -144,9 +180,9 @@
   "suite": "bloxcli-compatibility",
   "summary": {
     "partial": 4,
-    "total": 23,
+    "total": 29,
     "unsupported": 3,
     "untested": 1,
-    "verified": 15
+    "verified": 21
   }
 }

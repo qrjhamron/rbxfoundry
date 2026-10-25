@@ -214,9 +214,9 @@ impl McpServer {
         const NEEDS_PLACE: &[&str] = &[
             "studio_save", "studio_export", "studio_tree", "studio_inspect",
             "instance_create", "instance_get", "instance_set", "instance_delete",
-            "instance_clone", "instance_reparent", "instance_transform",
+            "instance_clone", "instance_reparent", "instance_transform", "instance_ungroup",
             "scene_render", "camera_control", "ui_render", "ui_inspect", "runtime_run", "runtime_export",
-            "ui_validate", "studio_undo", "studio_redo",
+            "ui_validate", "studio_undo", "studio_redo", "script_analyze",
         ];
         if NEEDS_PLACE.contains(&name) && self.open_path.is_none() {
             return err("no place is open; call studio_open or studio_new first");
@@ -321,6 +321,24 @@ impl McpServer {
                 let moved = self.engine()?.reparent(str_arg(args, "target")?, str_arg(args, "parent")?)?;
                 let saved = self.persist()?;
                 text(json!({"reparented": moved, "saved": saved}))
+            }
+            "instance_ungroup" => {
+                let target = str_arg(args, "target")?;
+                let parent = target.rsplit_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .ok_or_else(|| crate::tree::Error("ungroup target must be inside a parent".into()))?;
+                let node = self.engine()?.get(target)?;
+                if node.children.is_empty() {
+                    return err(format!("'{target}' has no children to ungroup"));
+                }
+                let mut moved = 0;
+                for child in &node.children {
+                    self.engine()?.reparent(&format!("{target}/{}", child.name), &parent)?;
+                    moved += 1;
+                }
+                self.engine()?.delete(target)?;
+                let saved = self.persist()?;
+                text(json!({"ungrouped": target, "moved": moved, "saved": saved}))
             }
             "instance_transform" => {
                 let target = str_arg(args, "target")?;
@@ -446,6 +464,22 @@ impl McpServer {
                 let mut content = image_result(&output, &result)?;
                 content.insert(0, json!({"type": "text", "text": serde_json::to_string(&result).mx()?}));
                 Ok(content)
+            }
+            "script_analyze" => {
+                // Official Luau frontend (parser + type solver + lint)
+                // over a script's Source in the open place.
+                let target = str_arg(args, "target")?;
+                let snapshot = self.engine()?.snapshot()?;
+                let script = snapshot.find_path(target).map_err(|e| crate::tree::Error(e.0))?;
+                let source = match script.properties.get("Source") {
+                    Some(crate::tree::PropValue::String(src)) => src.clone(),
+                    _ => return err(format!("'{target}' has no Source to analyze")),
+                };
+                let result = self.engine()?.call(
+                    "script/analyze",
+                    json!({"source": source, "name": target}),
+                )?;
+                text(json!({"target": target, "diagnostics": result["diagnostics"]}))
             }
             "runtime_run" => {
                 let duration = args.get("duration").and_then(|v| v.as_f64()).unwrap_or(2.0);
@@ -666,6 +700,7 @@ fn tool_definitions() -> Vec<JsonValue> {
             json!({"target": {"type": "string"}, "parent": {"type": "string"}, "name": {"type": "string"}}), &["target"])),
         tool("instance_reparent", "Move an instance under a new parent. Auto-saves.", schema(
             json!({"target": {"type": "string"}, "parent": {"type": "string"}}), &["target", "parent"])),
+        tool("instance_ungroup", "Ungroup a Model/Folder: children move to its parent and the container is deleted. Auto-saves.", schema(json!({"target": {"type": "string"}}), &["target"])),
         tool("instance_transform", "Apply moveDelta [x,y,z], rotate [rx,ry,rz] degrees, and/or scaleFactor to a part or model. Auto-saves.", schema(
             json!({"target": {"type": "string"}, "moveDelta": {"type": "array", "items": {"type": "number"}},
                    "rotate": {"type": "array", "items": {"type": "number"}}, "scaleFactor": {"type": "number"},
@@ -685,6 +720,7 @@ fn tool_definitions() -> Vec<JsonValue> {
             json!({"device": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "gui": {"type": "string"}}), &[])),
         tool("ui_validate", "Validate GUI layout: offscreen (error), clipped, zero-size and invisible elements.", schema(
             json!({"device": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "gui": {"type": "string"}}), &[])),
+        tool("script_analyze", "Run the official Luau frontend (syntax + type errors + lint with spans) over a script's Source in the open place. Roblox globals are declared as any.", schema(json!({"target": {"type": "string"}}), &["target"])),
         tool("runtime_run", "Run the open place's Luau scripts in the real runtime (separate from edit state): starts Script/LocalScript instances, optionally evals a chunk, then steps simulated time. Returns logs and structured script errors.", schema(
             json!({"duration": {"type": "number"}, "step": {"type": "number"}, "eval": {"type": "string"}}), &[])),
         tool("runtime_export", "Export the current runtime DataModel state to a .rbxl/.rbxlx file.", schema(json!({"output": {"type": "string"}}), &["output"])),
