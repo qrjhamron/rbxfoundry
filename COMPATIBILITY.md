@@ -287,3 +287,11 @@ no Studio comparison was run for any row in this program (`UNTESTED`).
 | Luau datatypes (Gate C1) | INTERNAL_VERIFIED | ColorSequence/NumberSequence(+Keypoints), NumberRange, PhysicalProperties.new, OverlapParams with bounds filtering (`gate_c.rs`) |
 | CSG / genuine Studio terrain chunks (Gate C3) | UNSUPPORTED | Unchanged: opaque preservation only, never faked |
 | Wedge/Mesh colliders, contact manifolds (Gate C2) | PARTIAL | Box approximations remain; documented, not parity |
+
+## Gap Closure continuation (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| WedgePart/CornerWedgePart colliders (Gate C2) | PARTIAL | Convex-hull wedge prism in Jolt replaces box approximation; ball slides downhill (`gate_c.rs`). MeshPart convex decomposition and contact manifolds remain partial |
+| OrderedDataStore (Gate C6) | PARTIAL | `GetSortedAsync` with real paging (`GetCurrentPage`/`AdvanceToNextPageAsync`/`IsFinished`), numeric values enforced (`gate_c.rs`) |
+| Gate B fixture acceptance | INTERNAL_VERIFIED | Animated inventory: real play click -> LocalScript -> TweenService -> committed render probe + desktop/mobile renders + export/reimport (`gate_b_fixtures.rs`). Play screenshots are 3D-only; GUI state is verified via commit + `ui render` probes (documented limitation of play screenshots) |
