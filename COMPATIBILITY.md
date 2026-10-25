@@ -27,7 +27,7 @@ references, that is stated; nothing is claimed 1:1.
 | `.rbxl` write | Supported | Genuine binary: `<roblox!` header, INST/PROP/PRNT/END chunks. Verified byte-level in tests. |
 | `.rbxlx` read/write | Supported | Via `rbx_xml` 3.0.1. |
 | `.rbxl` <-> `.rbxlx` conversion | Supported | `export`; tree-equality tested both directions. |
-| `.rbxm` model files | Unsupported | Places only in Phase 1. |
+| `.rbxm`/`.rbxmx` model files | PARTIAL (internal tests) | Phase 17: `model export/inspect/import` for single-root subtrees. References inside the subtree are rewritten to relative index paths; references leaving the subtree (or pointing at the model root itself, which decodes as `None`) fail the export loudly. Multi-root model files are rejected. |
 | DataModel root name | Not stored | Place files do not store it (upstream convention); reads synthesize `"Place"`. |
 | Unknown classes | Preserved | Kept verbatim; `validate` warns. Serializers may reject value types they cannot encode on unknown classes (e.g. `Attributes`) — that fails loudly. |
 | Unknown properties | Preserved | Kept verbatim; `validate` warns. |
@@ -149,7 +149,7 @@ DataModel copy and Luau context. MCP mirrors this as `net_*` tools.
 | SurfaceAppearance PBR | PARTIAL (internal tests) | ColorMap + NormalMap (derivative perturbation, no authored tangents) + RoughnessMap (G channel) + MetalnessMap (B channel) on MeshParts; missing maps reported by asset id, never faked. AlphaMode/transparency interplay approximate. |
 | Beam / Trail | PARTIAL (internal tests) | Beam renders as an oriented strip between Attachment0/1 world points with its first Color keypoint; Trail uses the same static strip (no motion-history ribbon). Texture/segments/curve unsupported. |
 | ParticleEmitter | PARTIAL (internal tests) | Deterministic billboard snapshot: Rate×Lifetime particles (cap 200) with seeded spread, first Size/Transparency/Color keypoints. No accumulation, velocity inheritance, rotation, or texture. |
-| TextService | PARTIAL (internal tests) | `TextService:GetTextSize` + `ui/textBounds` RPC use the GUI engine's FreeType measurement (DejaVu substitute — metrics differ from Roblox fonts); greedy word wrap. RichText unsupported. |
+| TextService | PARTIAL (internal tests) | `TextService:GetTextSize` + `ui/textBounds` RPC use the GUI engine's FreeType measurement (DejaVu substitute — metrics differ from Roblox fonts); greedy word wrap. RichText subset (Phase 16, INTERNAL_VERIFIED): `<b> <i> <u> <font color>` + `<br>` render as styled runs with correct fonts/colours/underlines (pixel-tested); unsupported tags stripped. Text rasterisation is byte-oriented: non-ASCII (e.g. em-dash, emoji) renders incorrectly. |
 | Skinning | UNSUPPORTED | Mesh v5 envelopes still skipped with an explicit warning; character animation is joint-transform based, not skinned. |
 
 ## Compatibility suite (Phase 12)
@@ -163,6 +163,30 @@ repository root (override with `BLOX_COMPAT_REPORT`). VERIFIED in
 that report means an internal automated check passes; there is no
 Roblox Studio reference data in this environment, so no check is a
 Studio comparison and none is claimed to be.
+
+## Phase 13-16 additions (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Templates `empty` / `baseplate` / `classic-baseplate` | PARTIAL (structural) | Registry in `templates.rs`; `new --template`, `template list/inspect`, `place info`. Studio dimensions/colours UNTESTED (no golden `.rbxl` fixture available) |
+| Place metadata (`game.PlaceId` etc.) | INTERNAL_VERIFIED | Luau reads default 0/"" for offline places; writes error as read-only. RBXL root metadata is not persisted by the serializers (documented, not silently invented) |
+| ContextActionService | INTERNAL_VERIFIED | Bind/Unbind/UnbindAllActions fire from play input (`phase14.rs`) |
+| PathfindingService (grid A*) | INTERNAL_VERIFIED | CreatePath/ComputeAsync/GetWaypoints route around obstacles; documented approximation, no navmesh |
+| Humanoid:GetState/ChangeState + StateChanged | INTERNAL_VERIFIED | State API driven by physics state |
+| PhysicsService collision groups | INTERNAL_VERIFIED | CreateGroup/SetPartCollisionGroup + RegisterCollisionGroupSettable via custom Jolt matrix filter |
+| AnimationTrack blending (`Weight`, `AdjustWeight`) | INTERNAL_VERIFIED | Weighted joint blending, lower-weight track contributes measurably |
+| Character stair climbing | INTERNAL_VERIFIED | 1-stud steps climbed while walking (`phase14.rs`) |
+| RichText subset | INTERNAL_VERIFIED | See TextService row; `screenshots/rich-text.png` |
+| ImageLabel nine-slice (`ScaleType=Slice`) | INTERNAL_VERIFIED | Nine quads from `SliceCenter` (Rect) x `SliceScale`, texture size from PNG IHDR; corners unscaled vs Stretch control (pixel-tested). Non-PNG textures fall back to stretch with a warning |
+| Multi-device UI screenshots | INTERNAL_VERIFIED | 1920x1080, 1280x800, 390x844 probe-verified anchored layout (`phase16.rs`) |
+
+## Phase 17 additions (verified internally, not Studio-compared)
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Export integrity guard | INTERNAL_VERIFIED | `integrity.rs` runs in `save`/`export`/`model` writes and reports in `validate` (`integrity` JSON summary, `integrityWarnings` on export). Errors block the write before any file is touched: dangling references, corrupted `BloxVoxels` (BTR1) terrain payloads, instance references inside Attributes. Warnings do not block: unresolved `rbxassetid://` content (preserved verbatim), scripts without Source, duplicate sibling names |
+| XML undefined referents | INTERNAL_VERIFIED | `rbx_xml` silently decodes a `<Ref>` to an undefined referent as `None`; `read_place`/`read_model` pre-scan XML text and refuse such files loudly |
+| `.rbxm`/`.rbxmx` models | INTERNAL_VERIFIED | See Place files table. `phase17.rs`: export->inspect->import round trip keeps PrimaryPart resolving; external references rejected |
 
 ## Tooling
 

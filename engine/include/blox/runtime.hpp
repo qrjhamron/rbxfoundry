@@ -102,6 +102,9 @@ public:
     // True while any AnimationTrack loaded through an Animator inside
     // `model_root` is playing (Gate 10 joint animation).
     bool animation_playing_in(Instance* model_root);
+    // Humanoid state bridge (Phase 15): physics reports the simulated
+    // state; GetState reads it and StateChanged fires on transitions.
+    void set_humanoid_state(Instance* humanoid, const std::string& state);
 
     // Implementation state, exposed for the C binding helpers in
     // runtime.cpp (this is an internal engine class, not a public API).

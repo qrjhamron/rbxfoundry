@@ -48,6 +48,9 @@ add_custom_command(
     COMMENT "Embedding SPIR-V shaders")
 
 add_library(blox_engine_lib STATIC src/json.cpp src/datamodel.cpp src/scene.cpp src/mesh.cpp src/renderer.cpp src/ui.cpp src/runtime.cpp src/physics.cpp src/terrain.cpp ${BLOX_SPV_HEADER})
+# Jolt is vendored with C++ RTTI off; the physics TU derives from
+# JPH::GroupFilter and must match (no dynamic_cast/typeid used there).
+set_source_files_properties(src/physics.cpp PROPERTIES COMPILE_OPTIONS "-fno-rtti")
 target_include_directories(blox_engine_lib PUBLIC include PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_features(blox_engine_lib PUBLIC cxx_std_20)
 target_link_libraries(blox_engine_lib PUBLIC Vulkan::Vulkan PNG::PNG Luau.Compiler Luau.VM Jolt)

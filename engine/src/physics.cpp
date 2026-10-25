@@ -31,6 +31,8 @@
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
 #include <Jolt/Physics/Constraints/PointConstraint.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
+#include <Jolt/Physics/Collision/CollisionGroup.h>
+#include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/RegisterTypes.h>
 
 using namespace JPH;
@@ -194,6 +196,26 @@ void set_ref(DataModel& model, Instance& inst, const char* name, Instance* targe
 
 } // namespace
 
+// Roblox collision-group matrix filter (Phase 15): pairs keyed by
+// Jolt GroupID = Roblox collision-group index.
+class CollisionMatrixFilter final : public GroupFilter {
+    JPH_DECLARE_SERIALIZABLE_VIRTUAL(JPH_EXPORT, CollisionMatrixFilter)
+public:
+    std::set<std::pair<uint32, uint32>> disabled;
+    bool CanCollide(const CollisionGroup& a, const CollisionGroup& b) const override {
+        uint32 x = a.GetGroupID(), y = b.GetGroupID();
+        if (x == CollisionGroup::cInvalidGroup || y == CollisionGroup::cInvalidGroup) return true;
+        if (x == y) return true;
+        return disabled.count({std::min(x, y), std::max(x, y)}) == 0;
+    }
+    void SaveBinaryState(StreamOut& stream) const override { (void)stream; }
+    void RestoreBinaryState(StreamIn& stream) override { (void)stream; }
+};
+
+JPH_IMPLEMENT_SERIALIZABLE_VIRTUAL(CollisionMatrixFilter) {
+    JPH_ADD_BASE_CLASS(CollisionMatrixFilter, GroupFilter)
+}
+
 struct PhysicsWorld::Impl {
     // Declared first so Jolt is fully registered before any allocator or
     // physics object is constructed (members init before the ctor body).
@@ -245,6 +267,8 @@ struct PhysicsWorld::Impl {
     double gravity = 196.2;
     bool built = false;
     std::vector<Ref<Constraint>> constraints;
+    Ref<CollisionMatrixFilter> group_filter;
+    std::map<std::string, uint32> group_ids;
     std::set<std::pair<BodyID, BodyID>> touching;
     std::vector<std::pair<Instance*, Instance*>> touch_events;
 
@@ -455,6 +479,43 @@ void PhysicsWorld::build_world() {
             }
         }
     }
+    // Collision groups (Phase 15): names from BasePart CollisionGroup
+    // properties; non-collidable pairs from PhysicsService attributes
+    // written by Luau before physics begins.
+    {
+        std::vector<Instance*> scan{workspace};
+        while (!scan.empty()) {
+            Instance* cur = scan.back();
+            scan.pop_back();
+            if (DataModel::is_base_part(cur->class_name)) {
+                const Variant* g = prop(*cur, "CollisionGroup");
+                std::string name = (g && g->type == ValueType::String && !g->string_value.empty())
+                                       ? g->string_value : "Default";
+                if (!impl_->group_ids.count(name))
+                    impl_->group_ids[name] = static_cast<uint32>(impl_->group_ids.size());
+            }
+            for (const auto& child : cur->children) scan.push_back(child.get());
+        }
+        if (!impl_->group_ids.count("Default")) impl_->group_ids["Default"] = 0;
+        impl_->group_filter = new CollisionMatrixFilter();
+        for (const auto& svc : model_.root().children) {
+            if (svc->class_name != "PhysicsService") continue;
+            auto it = svc->properties.find("Attributes");
+            if (it == svc->properties.end() || it->second.type != ValueType::Attributes) continue;
+            for (const auto& [key, entry] : it->second.complex_value.as_object()) {
+                if (key.rfind("cg:", 0) != 0) continue;
+                if (!entry.find("value") || entry.find("value")->as_bool()) continue;
+                std::string pair = key.substr(3);
+                size_t bar = pair.find('|');
+                if (bar == std::string::npos) continue;
+                auto ia = impl_->group_ids.find(pair.substr(0, bar));
+                auto ib = impl_->group_ids.find(pair.substr(bar + 1));
+                if (ia == impl_->group_ids.end() || ib == impl_->group_ids.end()) continue;
+                impl_->group_filter->disabled.insert(
+                    {std::min(ia->second, ib->second), std::max(ia->second, ib->second)});
+            }
+        }
+    }
     BodyInterface& bodies = impl_->physics.GetBodyInterface();
     std::vector<Instance*> stack{workspace};
     while (!stack.empty()) {
@@ -495,6 +556,14 @@ void PhysicsWorld::build_world() {
             quat_from_cframe(cf) * extra,
             anchored ? EMotionType::Static : EMotionType::Dynamic,
             anchored ? Layers::NON_MOVING : Layers::MOVING);
+        {
+            const Variant* g = prop(*inst, "CollisionGroup");
+            std::string name = (g && g->type == ValueType::String && !g->string_value.empty())
+                                   ? g->string_value : "Default";
+            auto git = impl_->group_ids.find(name);
+            uint32 gid = git != impl_->group_ids.end() ? git->second : 0;
+            settings.mCollisionGroup = CollisionGroup(impl_->group_filter, gid, 0);
+        }
         if (!anchored) {
             settings.mMotionQuality = EMotionQuality::LinearCast;
             // Mass from volume * density (Roblox-like): honour

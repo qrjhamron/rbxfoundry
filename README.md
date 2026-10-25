@@ -3,11 +3,12 @@
 A native Linux, CLI-only, offline-first Roblox Studio alternative designed
 for AI coding agents.
 
-> **Status: Phases 1–6 and 8 complete** (Phase 7, browser play, is
-> intentionally skipped). Editing core, real headless Vulkan rendering,
-> a Roblox GUI engine, an **MCP server** for AI agents, the **official
-> Luau runtime**, and **Jolt-powered physics playtest** with R6/R15
-> characters. Example output:
+> **Status: Phases 1–6, 8–16 implemented** (Phase 7, browser play, is
+> intentionally skipped). Editing core, place templates, real headless
+> Vulkan rendering, a Roblox GUI engine with RichText and nine-slice
+> images, an **MCP server** for AI agents, the **official Luau runtime**,
+> client/server simulation, and **Jolt-powered physics playtest** with
+> R6/R15 characters. Example output:
 > [castle-day.png](screenshots/castle-day.png) ·
 > [hud-desktop.png](screenshots/hud-desktop.png) ·
 > [hud-mobile.png](screenshots/hud-mobile.png) ·
@@ -187,7 +188,7 @@ undo snapshot before writing and write atomically.
   not, and says so); online-only assets without a local copy are
   reported, never faked. Full matrix in
   [COMPATIBILITY.md](COMPATIBILITY.md).
-- **Places only.** `.rbxm` model files are out of scope for now.
+- **Models are single-root only.** `.rbxm`/`.rbxmx` export/import handles one subtree root; references leaving the subtree fail loudly. See COMPATIBILITY.md.
 - **Property types.** The canonical set above covers the common Studio
   property types. Files using still-unsupported types (e.g.
   `Region3`, `MaterialColors`, object-referencing `Content`) fail loudly

@@ -29,7 +29,7 @@ namespace {
 
 // ---------------------------------------------------------------- userdata --
 
-enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack };
+enum class UKind { Instance, Vector3, CFrame, Color3, Vector2, UDim, UDim2, EnumItem, Signal, Connection, Tween, RaycastParams, AnimationTrack, PathResult };
 
 struct SignalImpl;
 
@@ -130,9 +130,28 @@ struct Runtime::Impl {
         bool playing = false;
         bool looped = false;
         bool stopped = true; // false once Play() is called, true on Stop()
+        bool has_played = false;
+        double weight = 1.0;
         std::vector<Instance*> driven; // Motor6Ds this track last wrote
     };
     std::vector<std::unique_ptr<AnimTrackState>> anim_tracks;
+    // PathfindingService paths (Phase 14).
+    struct PathState {
+        std::vector<std::array<double, 3>> waypoints;
+        std::vector<int> actions; // 0 Walk, 1 Jump
+        std::string status = "NoPath";
+        double agent_radius = 2.0;
+        bool can_jump = true;
+    };
+    std::vector<std::unique_ptr<PathState>> paths;
+    std::map<Instance*, std::string> humanoid_states;
+    // ContextActionService bindings (Phase 14).
+    struct BoundAction {
+        std::string name;
+        int fn_ref = -1;
+        std::vector<std::string> inputs; // KeyCode names, e.g. "E"
+    };
+    std::vector<BoundAction> bound_actions;
     std::map<void*, std::vector<Instance*>> raycast_filters;
     uint64_t next_referent = 2'000'000'000ULL;
     uint64_t interrupts = 0;
@@ -926,6 +945,24 @@ int inst_index(lua_State* L) {
     if (key == "Parent") { push_instance(L, inst->parent); return 1; }
     check_alive(rt, inst);
 
+    // DataModel metadata: absent values report the offline-unpublished
+    // defaults (Roblox reports PlaceId 0 for unpublished local places).
+    if (inst == &rt->model().root() &&
+        (key == "PlaceId" || key == "GameId" || key == "PlaceVersion" ||
+         key == "JobId" || key == "CreatorId" || key == "CreatorType")) {
+        auto it = inst->properties.find(key);
+        if (it != inst->properties.end()) {
+            variant_to_lua(L, rt, it->second, key);
+        } else if (key == "GameId" || key == "JobId") {
+            lua_pushstring(L, "");
+        } else if (key == "CreatorType") {
+            push_enum_item(L, "CreatorType", "User", 0);
+        } else {
+            lua_pushinteger(L, 0);
+        }
+        return 1;
+    }
+
     if (inst->class_name == "Players" && key == "LocalPlayer") {
         if (rt->impl_->net_context == Runtime::NetContext::Client)
             push_instance(L, rt->impl_->local_player);
@@ -988,7 +1025,7 @@ int inst_index(lua_State* L) {
     if (key == "Changed" || key == "ChildAdded" || key == "ChildRemoved" || key == "AncestryChanged" ||
         key == "Destroying" || key == "Died" || key == "OnServerEvent" ||
         key == "OnClientEvent" || key == "CharacterAdded" || key == "CharacterRemoving" ||
-        key == "Touched" || key == "TouchEnded") {
+        key == "Touched" || key == "TouchEnded" || key == "StateChanged") {
         push_signal(L, rt->impl_->instance_signal(rt, inst, key));
         return 1;
     }
@@ -1026,6 +1063,12 @@ int inst_newindex(lua_State* L) {
     Instance* inst = u->inst;
     std::string key = luaL_checkstring(L, 2);
     check_alive(rt, inst);
+
+    // DataModel metadata is read-only from Luau (as in Roblox).
+    if (inst == &model.root() &&
+        (key == "PlaceId" || key == "GameId" || key == "PlaceVersion" ||
+         key == "JobId" || key == "CreatorId" || key == "CreatorType"))
+        luaL_error(L, "%s is a read-only property", key.c_str());
 
     if (key == "Parent") {
         Instance* old_parent = inst->parent;
@@ -1273,7 +1316,7 @@ int m_get_service(lua_State* L) {
     }
     static const char* kServices[] = {"Workspace", "Lighting", "ReplicatedStorage", "ServerStorage",
         "ServerScriptService", "StarterGui", "StarterPlayer", "StarterPack", "Teams", "SoundService",
-        "RunService", "Players", "TweenService", "CollectionService", "UserInputService", "TextService"};
+        "RunService", "Players", "TweenService", "CollectionService", "UserInputService", "TextService", "PhysicsService", "ContextActionService", "PathfindingService"};
     for (const char* known : kServices) {
         if (std::string(service) == known) {
             Instance& created = model.add_instance(model.root(), service, service);
@@ -2159,6 +2202,437 @@ double sequence_length(Instance* sequence) {
 
 using AnimTrackState = Runtime::Impl::AnimTrackState;
 
+// -------------------------------------------------- ContextActionService --
+
+int m_cas_bind_action(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* service = check_instance(L, 1);
+    if (service->class_name != "ContextActionService")
+        luaL_error(L, "BindAction must be called on ContextActionService");
+    std::string name = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    Runtime::Impl::BoundAction action;
+    action.name = name;
+    lua_pushvalue(L, 3);
+    action.fn_ref = lua_ref(L, -1);
+    lua_pop(L, 1);
+    for (int i = 5; i <= lua_gettop(L); ++i) {
+        if (lua_type(L, i) == LUA_TUSERDATA) {
+            UData* u = static_cast<UData*>(lua_touserdata(L, i));
+            if (u && u->kind == UKind::EnumItem) action.inputs.push_back(u->s2);
+        } else if (lua_isstring(L, i)) {
+            action.inputs.push_back(lua_tostring(L, i));
+        }
+    }
+    auto& actions = rt->impl_->bound_actions;
+    actions.erase(std::remove_if(actions.begin(), actions.end(),
+                                 [&](const Runtime::Impl::BoundAction& a) { return a.name == name; }),
+                  actions.end());
+    actions.push_back(std::move(action));
+    return 0;
+}
+
+int m_cas_unbind_action(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    std::string name = luaL_checkstring(L, 2);
+    auto& actions = rt->impl_->bound_actions;
+    actions.erase(std::remove_if(actions.begin(), actions.end(),
+                                 [&](const Runtime::Impl::BoundAction& a) { return a.name == name; }),
+                  actions.end());
+    return 0;
+}
+
+int m_cas_unbind_all(lua_State* L) {
+    rt_of(L)->impl_->bound_actions.clear();
+    return 0;
+}
+
+bool resume_thread(Runtime* rt, Thread* t); // fwd (defined below)
+
+void fire_bound_actions(Runtime* rt, lua_State* L, const std::string& key_name, bool down) {
+    for (const auto& action : rt->impl_->bound_actions) {
+        bool match = false;
+        for (const auto& input : action.inputs)
+            if (input == key_name) { match = true; break; }
+        if (!match) continue;
+        Thread* t = make_thread(rt, L, "ContextActionService/" + action.name);
+        lua_State* co = t->co;
+        lua_rawgeti(co, LUA_REGISTRYINDEX, action.fn_ref);
+        lua_pushstring(co, action.name.c_str());
+        push_enum_item(co, "UserInputState", down ? "Begin" : "End", down ? 0 : 2);
+        lua_newtable(co);
+        push_enum_item(co, "KeyCode", key_name, 0);
+        lua_setfield(co, -2, "KeyCode");
+        push_enum_item(co, "UserInputType", "Keyboard", 8);
+        lua_setfield(co, -2, "UserInputType");
+        push_enum_item(co, "UserInputState", down ? "Begin" : "End", down ? 0 : 2);
+        lua_setfield(co, -2, "UserInputState");
+        t->pending_args = 3;
+        resume_thread(rt, t);
+    }
+}
+
+// ------------------------------------------------------- PhysicsService --
+
+void set_service_attribute(Runtime* rt, Instance* inst, const std::string& key,
+                           const std::string& type, const Json& value) {
+    Variant attrs;
+    auto it = inst->properties.find("Attributes");
+    if (it != inst->properties.end() && it->second.type == ValueType::Attributes)
+        attrs = it->second;
+    else {
+        attrs.type = ValueType::Attributes;
+        attrs.complex_value = Json::object();
+    }
+    Json entry = Json::object();
+    entry.set("type", Json(type));
+    entry.set("value", value);
+    attrs.complex_value.set(key, std::move(entry));
+    std::string error;
+    rt->model().set_property(*inst, "Attributes", attrs, error);
+}
+
+bool get_service_bool_attribute(Instance* inst, const std::string& key, bool fallback) {
+    auto it = inst->properties.find("Attributes");
+    if (it == inst->properties.end() || it->second.type != ValueType::Attributes) return fallback;
+    const Json* entry = it->second.complex_value.find(key);
+    if (!entry || !entry->find("value")) return fallback;
+    return entry->find("value")->as_bool();
+}
+
+Instance* check_physics_service(lua_State* L, int idx) {
+    Instance* inst = check_instance(L, idx);
+    if (inst->class_name != "PhysicsService")
+        luaL_error(L, "this method is only available on PhysicsService");
+    return inst;
+}
+
+int m_physics_register_group(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* service = check_physics_service(L, 1);
+    std::string name = luaL_checkstring(L, 2);
+    // Recorded as a service attribute so the physics builder (which
+    // reads the same DataModel) sees the registry.
+    set_service_attribute(rt, service, "group:" + name, "String", Json(name));
+    return 0;
+}
+
+int m_physics_set_part_group(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    check_physics_service(L, 1);
+    Instance* part = check_instance(L, 2);
+    std::string name = luaL_checkstring(L, 3);
+    std::string error;
+    if (!rt->model().set_property(*part, "CollisionGroup", Variant::make_string(name), error))
+        luaL_error(L, "%s", error.c_str());
+    return 0;
+}
+
+std::string collision_pair_key(const std::string& a, const std::string& b) {
+    return a < b ? "cg:" + a + "|" + b : "cg:" + b + "|" + a;
+}
+
+int m_physics_set_collidable(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* service = check_physics_service(L, 1);
+    std::string a = luaL_checkstring(L, 2);
+    std::string b = luaL_checkstring(L, 3);
+    bool collidable = lua_toboolean(L, 4) != 0;
+    set_service_attribute(rt, service, collision_pair_key(a, b), "Bool", Json(collidable));
+    return 0;
+}
+
+int m_physics_are_collidable(lua_State* L) {
+    Instance* service = check_physics_service(L, 1);
+    std::string a = luaL_checkstring(L, 2);
+    std::string b = luaL_checkstring(L, 3);
+    if (a == b) { lua_pushboolean(L, 1); return 1; }
+    lua_pushboolean(L, get_service_bool_attribute(service, collision_pair_key(a, b), true) ? 1 : 0);
+    return 1;
+}
+
+// -------------------------------------------------- PathfindingService --
+// Grid A* over BasePart AABBs (documented approximation: no navmesh,
+// 2-stud cells, floors are part top surfaces, jump links up to 3.2
+// studs when AgentCanJump). Character models are excluded.
+
+struct PathPart {
+    double minx, maxx, miny, maxy, minz, maxz;
+};
+
+int m_pathfinding_create_path(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* service = check_instance(L, 1);
+    if (service->class_name != "PathfindingService")
+        luaL_error(L, "CreatePath must be called on PathfindingService");
+    auto state = std::make_unique<Runtime::Impl::PathState>();
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "AgentRadius");
+        if (lua_isnumber(L, -1)) state->agent_radius = lua_tonumber(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "AgentCanJump");
+        if (!lua_isnil(L, -1)) state->can_jump = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+    }
+    Runtime::Impl::PathState* raw = state.get();
+    rt->impl_->paths.push_back(std::move(state));
+    UData* u = new_box(L, UKind::PathResult, "BloxPath");
+    u->extra = raw;
+    return 1;
+}
+
+int m_path_compute(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    auto* u = check_box(L, 1, UKind::PathResult, "Path");
+    auto* path = static_cast<Runtime::Impl::PathState*>(u->extra);
+    UData* from = check_box(L, 2, UKind::Vector3, "Vector3");
+    UData* to = check_box(L, 3, UKind::Vector3, "Vector3");
+    path->waypoints.clear();
+    path->actions.clear();
+    path->status = "NoPath";
+
+    // Collect collidable part AABBs (excluding character rigs).
+    std::vector<PathPart> parts;
+    Instance* workspace = nullptr;
+    for (const auto& child : rt->model().root().children)
+        if (child->class_name == "Workspace") workspace = child.get();
+    if (!workspace) return 0;
+    std::vector<std::pair<Instance*, bool>> stack{{workspace, false}};
+    while (!stack.empty()) {
+        auto [inst, in_character] = stack.back();
+        stack.pop_back();
+        bool character = in_character;
+        if (inst->class_name == "Model") {
+            for (const auto& c : inst->children)
+                if (c->class_name == "Humanoid") character = true;
+        }
+        if (!character && DataModel::is_base_part(inst->class_name)) {
+            auto cit = inst->properties.find("CanCollide");
+            bool can_collide = cit == inst->properties.end() || cit->second.type != ValueType::Bool ||
+                               cit->second.bool_value;
+            auto cf_it = inst->properties.find("CFrame");
+            auto sz_it = inst->properties.find("Size");
+            if (can_collide && cf_it != inst->properties.end() && sz_it != inst->properties.end() &&
+                cf_it->second.type == ValueType::CFrame && sz_it->second.type == ValueType::Vector3) {
+                const Variant& cf = cf_it->second;
+                const Variant& sz = sz_it->second;
+                PathPart pp{1e18, -1e18, 1e18, -1e18, 1e18, -1e18};
+                for (int corner = 0; corner < 8; ++corner) {
+                    double lx = (corner & 1 ? 1 : -1) * sz.vec3[0] / 2;
+                    double ly = (corner & 2 ? 1 : -1) * sz.vec3[1] / 2;
+                    double lz = (corner & 4 ? 1 : -1) * sz.vec3[2] / 2;
+                    double wx = cf.position[0] + cf.rotation[0] * lx + cf.rotation[1] * ly + cf.rotation[2] * lz;
+                    double wy = cf.position[1] + cf.rotation[3] * lx + cf.rotation[4] * ly + cf.rotation[5] * lz;
+                    double wz = cf.position[2] + cf.rotation[6] * lx + cf.rotation[7] * ly + cf.rotation[8] * lz;
+                    pp.minx = std::min(pp.minx, wx); pp.maxx = std::max(pp.maxx, wx);
+                    pp.miny = std::min(pp.miny, wy); pp.maxy = std::max(pp.maxy, wy);
+                    pp.minz = std::min(pp.minz, wz); pp.maxz = std::max(pp.maxz, wz);
+                }
+                parts.push_back(pp);
+            }
+        }
+        for (const auto& child : inst->children) stack.push_back({child.get(), character});
+    }
+
+    const double cell = 2.0;
+    double minx = std::min(from->n[0], to->n[0]) - 26, maxx = std::max(from->n[0], to->n[0]) + 26;
+    double minz = std::min(from->n[2], to->n[2]) - 26, maxz = std::max(from->n[2], to->n[2]) + 26;
+    int nx = static_cast<int>((maxx - minx) / cell) + 1;
+    int nz = static_cast<int>((maxz - minz) / cell) + 1;
+    double cap_y = std::max(from->n[1], to->n[1]) + 3.0;
+    // Cells test area overlap (a 1-stud wall must block the cells it
+    // crosses even when no cell centre lands inside it).
+    auto floor_at = [&](double wx, double wz, double& floor, bool& blocked) {
+        const double half = cell / 2;
+        auto overlaps = [&](const PathPart& pp) {
+            return pp.maxx >= wx - half && pp.minx <= wx + half &&
+                   pp.maxz >= wz - half && pp.minz <= wz + half;
+        };
+        floor = -1e18;
+        for (const PathPart& pp : parts) {
+            if (overlaps(pp) && pp.maxy <= cap_y)
+                floor = std::max(floor, pp.maxy);
+        }
+        if (floor < -1e17) { blocked = true; return; }
+        blocked = false;
+        for (const PathPart& pp : parts) {
+            if (overlaps(pp) &&
+                pp.miny < floor + 4.5 && pp.maxy > floor + 0.25 && std::abs(pp.maxy - floor) > 0.01) {
+                blocked = true;
+                return;
+            }
+        }
+    };
+    std::vector<double> floors(static_cast<size_t>(nx * nz), -1e18);
+    std::vector<char> blocks(static_cast<size_t>(nx * nz), 1);
+    for (int iz = 0; iz < nz; ++iz)
+        for (int ix = 0; ix < nx; ++ix) {
+            double f; bool b;
+            floor_at(minx + (ix + 0.5) * cell, minz + (iz + 0.5) * cell, f, b);
+            floors[static_cast<size_t>(iz * nx + ix)] = f;
+            blocks[static_cast<size_t>(iz * nx + ix)] = b ? 1 : 0;
+        }
+    auto index_of = [&](double wx, double wz) {
+        int ix = static_cast<int>((wx - minx) / cell), iz = static_cast<int>((wz - minz) / cell);
+        ix = std::max(0, std::min(nx - 1, ix));
+        iz = std::max(0, std::min(nz - 1, iz));
+        return iz * nx + ix;
+    };
+    int start = index_of(from->n[0], from->n[2]);
+    int goal = index_of(to->n[0], to->n[2]);
+    if (blocks[static_cast<size_t>(start)] || blocks[static_cast<size_t>(goal)]) return 0;
+    // A*.
+    std::vector<double> cost(static_cast<size_t>(nx * nz), 1e18);
+    std::vector<int> came(static_cast<size_t>(nx * nz), -1);
+    std::vector<int> action_to(static_cast<size_t>(nx * nz), 0);
+    std::vector<char> closed(static_cast<size_t>(nx * nz), 0);
+    auto heuristic = [&](int idx) {
+        int dx = std::abs(idx % nx - goal % nx), dz = std::abs(idx / nx - goal / nx);
+        return static_cast<double>(dx + dz);
+    };
+    std::vector<int> open{start};
+    cost[static_cast<size_t>(start)] = 0;
+    bool reached = false;
+    const int dirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    while (!open.empty()) {
+        size_t best = 0;
+        double best_f = 1e18;
+        for (size_t i = 0; i < open.size(); ++i) {
+            double f = cost[static_cast<size_t>(open[i])] + heuristic(open[i]);
+            if (f < best_f) { best_f = f; best = i; }
+        }
+        int cur = open[best];
+        open.erase(open.begin() + static_cast<long>(best));
+        if (closed[static_cast<size_t>(cur)]) continue;
+        closed[static_cast<size_t>(cur)] = 1;
+        if (cur == goal) { reached = true; break; }
+        int cx = cur % nx, cz = cur / nx;
+        for (const auto& d : dirs) {
+            int qx = cx + d[0], qz = cz + d[1];
+            if (qx < 0 || qz < 0 || qx >= nx || qz >= nz) continue;
+            int nb = qz * nx + qx;
+            if (blocks[static_cast<size_t>(nb)] || closed[static_cast<size_t>(nb)]) continue;
+            double rise = floors[static_cast<size_t>(nb)] - floors[static_cast<size_t>(cur)];
+            int action = 0;
+            if (rise > 1.2) {
+                if (path->can_jump && rise <= 3.2) action = 1;
+                else continue;
+            }
+            if (rise < -6.0) continue; // no lethal drops
+            double nc = cost[static_cast<size_t>(cur)] + 1.0;
+            if (nc < cost[static_cast<size_t>(nb)]) {
+                cost[static_cast<size_t>(nb)] = nc;
+                came[static_cast<size_t>(nb)] = cur;
+                action_to[static_cast<size_t>(nb)] = action;
+                open.push_back(nb);
+            }
+        }
+    }
+    if (!reached) return 0;
+    std::vector<int> chain;
+    for (int cur = goal; cur != -1; cur = came[static_cast<size_t>(cur)]) chain.push_back(cur);
+    std::reverse(chain.begin(), chain.end());
+    // Simplify: keep direction changes, jump points and the goal.
+    for (size_t i = 0; i < chain.size(); ++i) {
+        bool keep = i + 1 == chain.size() || action_to[static_cast<size_t>(chain[i])] == 1;
+        if (!keep && i > 0) {
+            int dx1 = chain[i] % nx - chain[i - 1] % nx, dz1 = chain[i] / nx - chain[i - 1] / nx;
+            int dx2 = chain[i + 1] % nx - chain[i] % nx, dz2 = chain[i + 1] / nx - chain[i] / nx;
+            keep = dx1 != dx2 || dz1 != dz2;
+        }
+        if (!keep && i > 0) continue;
+        int idx = chain[i];
+        path->waypoints.push_back({minx + (idx % nx + 0.5) * cell,
+                                   floors[static_cast<size_t>(idx)],
+                                   minz + (idx / nx + 0.5) * cell});
+        path->actions.push_back(action_to[static_cast<size_t>(idx)]);
+    }
+    path->waypoints.push_back({to->n[0], floors[static_cast<size_t>(goal)], to->n[2]});
+    path->actions.push_back(0);
+    path->status = "Success";
+    return 0;
+}
+
+int m_path_get_waypoints(lua_State* L) {
+    auto* u = check_box(L, 1, UKind::PathResult, "Path");
+    auto* path = static_cast<Runtime::Impl::PathState*>(u->extra);
+    lua_newtable(L);
+    for (size_t i = 0; i < path->waypoints.size(); ++i) {
+        lua_newtable(L);
+        push_vector3(L, path->waypoints[i][0], path->waypoints[i][1], path->waypoints[i][2]);
+        lua_setfield(L, -2, "Position");
+        push_enum_item(L, "PathWaypointAction", path->actions[i] ? "Jump" : "Walk", path->actions[i]);
+        lua_setfield(L, -2, "Action");
+        lua_pushstring(L, "");
+        lua_setfield(L, -2, "Label");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+int path_index(lua_State* L) {
+    auto* u = check_box(L, 1, UKind::PathResult, "Path");
+    auto* path = static_cast<Runtime::Impl::PathState*>(u->extra);
+    std::string key = luaL_checkstring(L, 2);
+    if (key == "Status") {
+        int64_t value = path->status == "Success" ? 0 : 3;
+        push_enum_item(L, "PathStatus", path->status, value);
+        return 1;
+    }
+    lua_getfield(L, LUA_REGISTRYINDEX, "blox_path_methods");
+    lua_pushstring(L, key.c_str());
+    lua_rawget(L, -2);
+    lua_remove(L, -2);
+    return 1;
+}
+
+namespace {
+const std::map<std::string, int64_t>& humanoid_state_values() {
+    static const std::map<std::string, int64_t> values = {
+        {"FallingDown", 0}, {"Running", 1}, {"RunningNoPhysics", 2}, {"Climbing", 3},
+        {"StrafingNoPhysics", 4}, {"Ragdoll", 5}, {"GettingUp", 6}, {"Jumping", 7},
+        {"Landed", 8}, {"Flying", 9}, {"Freefall", 10}, {"Seated", 11},
+        {"PlatformStanding", 12}, {"Dead", 13}, {"Swimming", 14}, {"Physics", 15}, {"None", 16}};
+    return values;
+}
+LuaArg enum_arg(const char* type, const std::string& name) {
+    LuaArg a;
+    a.kind = 5;
+    a.box.kind = UKind::EnumItem;
+    a.box.s1 = type;
+    a.box.s2 = name;
+    auto it = humanoid_state_values().find(name);
+    a.box.n[0] = it != humanoid_state_values().end() ? static_cast<double>(it->second) : 16.0;
+    return a;
+}
+} // namespace
+
+int m_humanoid_get_state(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* humanoid = check_instance(L, 1);
+    auto it = rt->impl_->humanoid_states.find(humanoid);
+    std::string state = it != rt->impl_->humanoid_states.end() ? it->second : "Running";
+    push_enum_item(L, "HumanoidStateType", state,
+                   humanoid_state_values().count(state) ? humanoid_state_values().at(state) : 16);
+    return 1;
+}
+
+int m_humanoid_change_state(lua_State* L) {
+    Runtime* rt = rt_of(L);
+    Instance* humanoid = check_instance(L, 1);
+    std::string state;
+    if (lua_type(L, 2) == LUA_TUSERDATA) {
+        UData* u = check_box(L, 2, UKind::EnumItem, "EnumItem");
+        state = u->s2;
+    } else {
+        state = luaL_checkstring(L, 2);
+    }
+    if (!humanoid_state_values().count(state))
+        luaL_error(L, "unknown HumanoidStateType '%s'", state.c_str());
+    rt->set_humanoid_state(humanoid, state);
+    return 0;
+}
+
 int m_animator_load_animation(lua_State* L) {
     Runtime* rt = rt_of(L);
     Instance* animator = check_instance(L, 1);
@@ -2206,6 +2680,7 @@ int track_play(lua_State* L) {
     if (track->time_pos >= sequence_length(track->sequence)) track->time_pos = 0;
     track->playing = true;
     track->stopped = false;
+    track->has_played = true;
     return 0;
 }
 
@@ -2221,6 +2696,13 @@ int track_stop(lua_State* L) {
         rt->model().set_property(*motor, "Transform", Variant::make_cframe(0, 0, 0), error);
     }
     track->driven.clear();
+    return 0;
+}
+
+int track_adjust_weight(lua_State* L) {
+    auto* u = check_box(L, 1, UKind::AnimationTrack, "AnimationTrack");
+    auto* track = static_cast<AnimTrackState*>(u->extra);
+    track->weight = std::max(0.0, luaL_checknumber(L, 2));
     return 0;
 }
 
@@ -2240,6 +2722,7 @@ int track_index(lua_State* L) {
     if (key == "IsPlaying") { lua_pushboolean(L, track->playing ? 1 : 0); return 1; }
     if (key == "Length") { lua_pushnumber(L, sequence_length(track->sequence)); return 1; }
     if (key == "Looped") { lua_pushboolean(L, track->looped ? 1 : 0); return 1; }
+    if (key == "Weight") { lua_pushnumber(L, track->weight); return 1; }
     lua_getfield(L, LUA_REGISTRYINDEX, "blox_track_methods");
     lua_pushstring(L, key.c_str());
     lua_rawget(L, -2);
@@ -2256,24 +2739,40 @@ int track_newindex(lua_State* L) {
         return 0;
     }
     if (key == "Looped") { track->looped = lua_toboolean(L, 3) != 0; return 0; }
+    if (key == "Weight") { track->weight = std::max(0.0, luaL_checknumber(L, 3)); return 0; }
     luaL_error(L, "AnimationTrack.%s is not writable", key.c_str());
     return 0;
 }
 
 void evaluate_anim_tracks(Runtime* rt, double dt) {
+    // Weighted blending (Phase 15): every non-stopped track that has
+    // been played contributes its sampled pose per joint; contributions
+    // are combined by weight (positions averaged, rotations accumulated
+    // as sign-aligned quaternion sums, then normalised).
+    struct Accum {
+        Instance* motor = nullptr;
+        double pos[3] = {0, 0, 0};
+        QuatD quat{0, 0, 0, 0};
+        bool first = true;
+        double wsum = 0;
+    };
+    std::map<Instance*, Accum> writes;
     for (auto& track_ptr : rt->impl_->anim_tracks) {
         AnimTrackState* track = track_ptr.get();
-        if (!track->playing || !track->sequence) continue;
-        double length = sequence_length(track->sequence);
-        track->time_pos += dt * track->speed;
-        if (length > 0 && track->time_pos >= length) {
-            if (track->looped) {
-                track->time_pos = std::fmod(track->time_pos, length);
-            } else {
-                track->time_pos = length;
-                track->playing = false;
+        if (!track->sequence) continue;
+        if (track->playing) {
+            double length = sequence_length(track->sequence);
+            track->time_pos += dt * track->speed;
+            if (length > 0 && track->time_pos >= length) {
+                if (track->looped) {
+                    track->time_pos = std::fmod(track->time_pos, length);
+                } else {
+                    track->time_pos = length;
+                    track->playing = false;
+                }
             }
         }
+        if (track->stopped || !track->has_played || track->weight <= 0) continue;
         Instance* model = model_of(track->animator);
         if (!model) continue;
         std::map<std::string, Variant> sampled;
@@ -2282,10 +2781,45 @@ void evaluate_anim_tracks(Runtime* rt, double dt) {
         for (const auto& [joint_name, cf] : sampled) {
             Instance* motor = find_motor6d(model, joint_name);
             if (!motor) continue;
-            std::string error;
-            if (rt->model().set_property(*motor, "Transform", cf, error))
-                track->driven.push_back(motor);
+            track->driven.push_back(motor);
+            Accum& acc = writes[motor];
+            acc.motor = motor;
+            double w = track->weight;
+            for (int k = 0; k < 3; ++k) acc.pos[k] += cf.position[k] * w;
+            QuatD q = quat_from_rotation(cf.rotation);
+            if (acc.first) {
+                acc.quat = q;
+                acc.first = false;
+            } else {
+                double dot = acc.quat.x * q.x + acc.quat.y * q.y + acc.quat.z * q.z + acc.quat.w * q.w;
+                double sign = dot < 0 ? -1.0 : 1.0;
+                acc.quat.x += sign * q.x * w;
+                acc.quat.y += sign * q.y * w;
+                acc.quat.z += sign * q.z * w;
+                acc.quat.w += sign * q.w * w;
+            }
+            if (acc.wsum == 0) {
+                // First contribution was stored unweighted above.
+                acc.quat.x *= w;
+                acc.quat.y *= w;
+                acc.quat.z *= w;
+                acc.quat.w *= w;
+            }
+            acc.wsum += w;
         }
+    }
+    for (auto& [motor, acc] : writes) {
+        if (acc.wsum <= 0) continue;
+        Variant v;
+        v.type = ValueType::CFrame;
+        for (int k = 0; k < 3; ++k) v.position[k] = acc.pos[k] / acc.wsum;
+        double len = std::sqrt(acc.quat.x * acc.quat.x + acc.quat.y * acc.quat.y +
+                               acc.quat.z * acc.quat.z + acc.quat.w * acc.quat.w);
+        QuatD q = acc.quat;
+        if (len > 0) { q.x /= len; q.y /= len; q.z /= len; q.w /= len; }
+        v.rotation = rotation_from_quat(q);
+        std::string error;
+        rt->model().set_property(*motor, "Transform", v, error);
     }
 }
 
@@ -2996,6 +3530,15 @@ void register_bindings(lua_State* L, Runtime* rt) {
     set_method(L, "blox_track_methods", "Play", track_play);
     set_method(L, "blox_track_methods", "Stop", track_stop);
     set_method(L, "blox_track_methods", "AdjustSpeed", track_adjust_speed);
+    set_method(L, "blox_track_methods", "AdjustWeight", track_adjust_weight);
+    luaL_newmetatable(L, "BloxPath");
+    lua_pushstring(L, "Path"); lua_setfield(L, -2, "__type");
+    lua_pushstring(L, "Path"); lua_setfield(L, -2, "__metatable");
+    lua_pushcfunction(L, path_index, "__index"); lua_setfield(L, -2, "__index");
+    lua_pop(L, 1);
+    lua_newtable(L); lua_setfield(L, LUA_REGISTRYINDEX, "blox_path_methods");
+    set_method(L, "blox_path_methods", "ComputeAsync", m_path_compute);
+    set_method(L, "blox_path_methods", "GetWaypoints", m_path_get_waypoints);
     set_method(L, "blox_tween_methods", "Play", tween_play);
     set_method(L, "blox_tween_methods", "Pause", tween_pause);
     set_method(L, "blox_tween_methods", "Cancel", tween_cancel);
@@ -3051,6 +3594,17 @@ void register_bindings(lua_State* L, Runtime* rt) {
                       {"Air", 1792}, {"Water", 2048}}},
         {"PartType", {{"Ball", 0}, {"Block", 1}, {"Cylinder", 2}}},
         {"RaycastFilterType", {{"Exclude", 0}, {"Include", 1}}},
+        {"PathStatus", {{"Success", 0}, {"ClosestStart", 1}, {"ClosestGoal", 2}, {"NoPath", 3}}},
+        {"PathWaypointAction", {{"Walk", 0}, {"Jump", 1}}},
+        {"UserInputState", {{"Begin", 0}, {"Change", 1}, {"End", 2}, {"Cancel", 3}}},
+        {"UserInputType", {{"MouseButton1", 0}, {"MouseButton2", 1}, {"MouseButton3", 2},
+                           {"MouseWheel", 3}, {"MouseMovement", 4}, {"Touch", 7}, {"Keyboard", 8},
+                           {"Gamepad1", 12}, {"None", 18}}},
+        {"HumanoidStateType", {{"FallingDown", 0}, {"Running", 1}, {"RunningNoPhysics", 2},
+                               {"Climbing", 3}, {"StrafingNoPhysics", 4}, {"Ragdoll", 5},
+                               {"GettingUp", 6}, {"Jumping", 7}, {"Landed", 8}, {"Flying", 9},
+                               {"Freefall", 10}, {"Seated", 11}, {"PlatformStanding", 12},
+                               {"Dead", 13}, {"Swimming", 14}, {"Physics", 15}, {"None", 16}}},
         {"Font", {{"Legacy", 0}, {"Arial", 1}, {"ArialBold", 2}, {"SourceSans", 3},
                   {"SourceSansBold", 4}, {"Gotham", 33}, {"GothamBold", 35}, {"Code", 15}}},
         {"HumanoidRigType", {{"R6", 0}, {"R15", 1}}},
@@ -3123,6 +3677,16 @@ void register_bindings(lua_State* L, Runtime* rt) {
     lua_setglobal(L, "RaycastParams");
 
     set_method(L, "blox_methods", "LoadAnimation", m_animator_load_animation);
+    set_method(L, "blox_methods", "GetState", m_humanoid_get_state);
+    set_method(L, "blox_methods", "CreatePath", m_pathfinding_create_path);
+    set_method(L, "blox_methods", "BindAction", m_cas_bind_action);
+    set_method(L, "blox_methods", "UnbindAction", m_cas_unbind_action);
+    set_method(L, "blox_methods", "UnbindAllActions", m_cas_unbind_all);
+    set_method(L, "blox_methods", "RegisterCollisionGroup", m_physics_register_group);
+    set_method(L, "blox_methods", "SetPartCollisionGroup", m_physics_set_part_group);
+    set_method(L, "blox_methods", "CollisionGroupSetCollidable", m_physics_set_collidable);
+    set_method(L, "blox_methods", "CollisionGroupsAreCollidable", m_physics_are_collidable);
+    set_method(L, "blox_methods", "ChangeState", m_humanoid_change_state);
     set_method(L, "blox_methods", "FillBlock", m_terrain_fill_block);
     set_method(L, "blox_methods", "FillBall", m_terrain_fill_ball);
     set_method(L, "blox_methods", "Clear", m_terrain_clear);
@@ -3245,6 +3809,19 @@ Runtime::Runtime(DataModel& model) : model_(model), impl_(std::make_unique<Impl>
 
 Runtime::~Runtime() {
     if (L_) lua_close(L_);
+}
+
+
+
+void Runtime::set_humanoid_state(Instance* humanoid, const std::string& state) {
+    if (!humanoid) return;
+    std::string& current = impl_->humanoid_states[humanoid];
+    if (current == state) return;
+    std::string old = current.empty() ? "Running" : current;
+    current = state;
+    fire_instance_signal(this, L_, humanoid, "StateChanged",
+                         {enum_arg("HumanoidStateType", state), enum_arg("HumanoidStateType", old)});
+    process_threads(this);
 }
 
 bool Runtime::animation_playing_in(Instance* model_root) {
@@ -3530,6 +4107,8 @@ void Runtime::set_key_state(const std::string& key_name, bool down) {
             fire_instance_signal(this, L_, child.get(), signal, {arg_string(key_name)});
         }
     }
+    fire_bound_actions(this, L_, key_name, down);
+    process_threads(this);
 }
 
 void Runtime::step(double dt) {

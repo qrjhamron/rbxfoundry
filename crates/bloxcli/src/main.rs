@@ -11,7 +11,9 @@ use serde_json::{json, Value as JsonValue};
 use bloxcli::convert::validate_reflection;
 use bloxcli::engine::{find_engine, EngineClient};
 use bloxcli::history::History;
-use bloxcli::rbxio::{format_for_path, read_place, write_place, PlaceFormat};
+use bloxcli::integrity::{blocked_message, check_export_integrity, errors as integrity_errors, warnings as integrity_warnings};
+use bloxcli::integrity::ref_index_path;
+use bloxcli::rbxio::{format_for_path, read_model, read_place, write_model, write_place, PlaceFormat};
 use bloxcli::tree::{parse_value, parse_vec3, Error, Node, PropValue, Result};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -80,6 +82,9 @@ fn run(args: &[String]) -> Result<()> {
         "net" => cmd_net(&global, cmd_args),
         "net-daemon" => cmd_net_daemon(&global, cmd_args),
         "terrain" => cmd_terrain(&global, cmd_args),
+        "place" => cmd_place(&global, cmd_args),
+        "model" => cmd_model(&global, cmd_args),
+        "template" => cmd_template(&global, cmd_args),
         "new" => cmd_new(&global, cmd_args),
         "inspect" | "tree" => cmd_tree(&global, cmd_args),
         "add" => cmd_add(&global, cmd_args),
@@ -132,6 +137,11 @@ fn print_help() {
          \x20       Load, validate in the engine, and rewrite the file canonically.\n\
          \x20   export <input> <output> [--force]\n\
          \x20       Convert between .rbxl and .rbxlx (or re-encode the same format).\n\
+         \x20       An integrity guard blocks writes with dangling references or\n\
+         \x20       corrupted terrain; unresolved assets warn but are preserved.\n\
+         \x20   model export <place> --target <path> --output <file.rbxm|.rbxmx> [--force]\n\
+         \x20   model inspect <file.rbxm|.rbxmx>\n\
+         \x20   model import <file.rbxm|.rbxmx> <place> --parent <path>\n\
          \x20   validate <file>\n\
          \x20       Decode and validate; exit code 1 when invalid.\n\
          \x20   get <file> --target <path> [--property <Name>]\n\
@@ -778,6 +788,134 @@ fn cmd_terrain(global: &Global, args: &[String]) -> Result<()> {
     }
 }
 
+fn cmd_place(global: &Global, args: &[String]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(usage_err("place needs a subcommand: info"));
+    };
+    match sub.as_str() {
+        "info" => {
+            let parsed = parse_cmd(rest, &[], &[])?;
+            let file = parsed.file()?;
+            let (node, format) = read_place(&file)?;
+            let int_prop = |name: &str| -> i64 {
+                match node.properties.get(name) {
+                    Some(PropValue::Int64(v)) => *v,
+                    Some(PropValue::Int32(v)) => *v as i64,
+                    _ => 0,
+                }
+            };
+            let str_prop = |name: &str| -> String {
+                match node.properties.get(name) {
+                    Some(PropValue::String(v)) => v.clone(),
+                    _ => String::new(),
+                }
+            };
+            let place_id = int_prop("PlaceId");
+            let game_id = str_prop("GameId");
+            let place_version = int_prop("PlaceVersion");
+            let job_id = str_prop("JobId");
+            let metadata_state = if place_id == 0 && game_id.is_empty() {
+                "offline-unpublished (PlaceId=0, no GameId; Roblox does not store published place/universe ids inside a local .rbxl, so none are invented)"
+            } else {
+                "stored in canonical tree root properties (not serialized into RBXL binary/XML; reloaded files report offline-unpublished unless re-supplied)"
+            };
+            let services: Vec<String> = node.children.iter().map(|c| c.name.clone()).collect();
+            let terrain = node
+                .find_path("Workspace/Terrain")
+                .ok()
+                .map(|terrain| {
+                    let voxels = matches!(
+                        terrain.properties.get("BloxVoxels"),
+                        Some(PropValue::BinaryString(v)) if !v.is_empty()
+                    );
+                    json!({
+                        "present": true,
+                        "voxelPayload": if voxels { "BloxVoxels (BTR1)" } else { "empty" },
+                    })
+                })
+                .unwrap_or_else(|| json!({"present": false}));
+            let info = json!({
+                "path": file.display().to_string(),
+                "format": format_name(format),
+                "name": node.name,
+                "className": node.class_name,
+                "instances": node.count(),
+                "services": services,
+                "metadata": {
+                    "placeId": place_id,
+                    "gameId": game_id,
+                    "placeVersion": place_version,
+                    "jobId": job_id,
+                    "creatorId": int_prop("CreatorId"),
+                    "state": metadata_state,
+                },
+                "terrain": terrain,
+            });
+            emit(
+                global,
+                format!(
+                    "{}: {} ({}), {} instance(s), PlaceId {} ({})",
+                    file.display(),
+                    node.name,
+                    format_name(format),
+                    node.count(),
+                    place_id,
+                    if place_id == 0 { "offline-unpublished" } else { "supplied metadata" }
+                ),
+                json!({"ok": true, "command": "place info", "info": info}),
+            );
+            Ok(())
+        }
+        other => Err(usage_err(&format!("unknown place subcommand '{other}'"))),
+    }
+}
+
+fn cmd_template(global: &Global, args: &[String]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(usage_err("template needs a subcommand: list|inspect"));
+    };
+    match sub.as_str() {
+        "list" => {
+            let templates = bloxcli::templates::registry()
+                .iter()
+                .map(|t| json!({"name": t.name, "description": t.description, "status": t.status}))
+                .collect::<Vec<_>>();
+            emit(
+                global,
+                templates
+                    .iter()
+                    .map(|t| format!("{} — {}", t["name"].as_str().unwrap_or(""), t["description"].as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                json!({"ok": true, "command": "template list", "templates": templates}),
+            );
+            Ok(())
+        }
+        "inspect" => {
+            let parsed = parse_cmd(rest, &[], &[])?;
+            let name = parsed
+                .positional
+                .first()
+                .ok_or_else(|| usage_err("template inspect requires a template name"))?;
+            let template = bloxcli::templates::find(name)
+                .ok_or_else(|| usage_err(&format!("unknown template '{name}'")))?;
+            let info = json!({
+                "name": template.name,
+                "description": template.description,
+                "status": template.status,
+                "contents": template.contents,
+            });
+            emit(
+                global,
+                format!("template {}: {}\nstatus: {}", template.name, template.description, template.status),
+                json!({"ok": true, "command": "template inspect", "template": info}),
+            );
+            Ok(())
+        }
+        other => Err(usage_err(&format!("unknown template subcommand '{other}'"))),
+    }
+}
+
 fn cmd_run(global: &Global, args: &[String]) -> Result<()> {
     let parsed = parse_cmd(
         args,
@@ -908,7 +1046,7 @@ fn cmd_mcp(global: &Global, args: &[String]) -> Result<()> {
 }
 
 fn cmd_new(global: &Global, args: &[String]) -> Result<()> {
-    let parsed = parse_cmd(args, &["name"], &["force"])?;
+    let parsed = parse_cmd(args, &["name", "template"], &["force"])?;
     let file = parsed.file()?;
     format_for_path(&file)?;
     if file.exists() && !parsed.has("force") {
@@ -922,6 +1060,17 @@ fn cmd_new(global: &Global, args: &[String]) -> Result<()> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Place".to_string());
     let name = parsed.opt("name").unwrap_or(&default_name).to_string();
+    let template = parsed.opt("template").unwrap_or("empty").to_string();
+    if bloxcli::templates::find(&template).is_none() {
+        return Err(usage_err(&format!(
+            "unknown template '{template}' (available: {})",
+            bloxcli::templates::registry()
+                .iter()
+                .map(|t| t.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
 
     let mut engine = spawn_engine(global)?;
     engine.new_datamodel(&name)?;
@@ -941,6 +1090,7 @@ fn cmd_new(global: &Global, args: &[String]) -> Result<()> {
     ] {
         engine.add("game", class, service_name)?;
     }
+    bloxcli::templates::apply(&mut engine, &template)?;
     let tree = engine.snapshot()?;
     let engine_version = engine.engine_version.clone();
     engine.shutdown();
@@ -956,7 +1106,7 @@ fn cmd_new(global: &Global, args: &[String]) -> Result<()> {
         ),
         json!({
             "ok": true, "command": "new", "path": file.display().to_string(),
-            "format": format_name(format), "placeName": name,
+            "format": format_name(format), "placeName": name, "template": template,
             "instances": tree.count(), "engineVersion": engine_version,
         }),
     );
@@ -1135,6 +1285,12 @@ fn cmd_save(global: &Global, args: &[String]) -> Result<()> {
             report.get("issues").cloned().unwrap_or(JsonValue::Null)
         )));
     }
+    let place_dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let guard = check_export_integrity(&tree, &place_dir);
+    if !integrity_errors(&guard).is_empty() {
+        return Err(Error(blocked_message(&guard)));
+    }
+    let guard_warnings: Vec<JsonValue> = integrity_warnings(&guard).iter().map(|i| i.to_json()).collect();
     write_mutation(&file, &tree)?;
     emit(
         global,
@@ -1147,6 +1303,7 @@ fn cmd_save(global: &Global, args: &[String]) -> Result<()> {
         json!({
             "ok": true, "command": "save", "path": file.display().to_string(),
             "format": format_name(format), "instances": tree.count(),
+            "integrityWarnings": guard_warnings,
         }),
     );
     Ok(())
@@ -1169,6 +1326,12 @@ fn cmd_export(global: &Global, args: &[String]) -> Result<()> {
     let (mut engine, in_format) = load_session(global, &input)?;
     let tree = engine.snapshot()?;
     engine.shutdown();
+    let place_dir = input.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let guard = check_export_integrity(&tree, &place_dir);
+    if !integrity_errors(&guard).is_empty() {
+        return Err(Error(blocked_message(&guard)));
+    }
+    let guard_warnings: Vec<JsonValue> = integrity_warnings(&guard).iter().map(|i| i.to_json()).collect();
     let out_format = write_place(&output, &tree)?;
     emit(
         global,
@@ -1185,11 +1348,272 @@ fn cmd_export(global: &Global, args: &[String]) -> Result<()> {
             "input": input.display().to_string(), "output": output.display().to_string(),
             "inputFormat": format_name(in_format), "outputFormat": format_name(out_format),
             "instances": tree.count(),
+            "integrityWarnings": guard_warnings,
         }),
     );
     Ok(())
 }
 
+
+// ---------- Phase 17: model files (.rbxm/.rbxmx) ----------
+
+/// Absolute child-index path of a display path (same segment rules as
+/// `Node::find_path`: a leading `game`/root name/root class is skipped,
+/// ambiguous sibling names are errors).
+fn display_to_index(root: &Node, path: &str) -> Result<Vec<usize>> {
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let mut cur = root;
+    let mut index_path = Vec::new();
+    let mut iter = parts.iter().peekable();
+    if let Some(first) = iter.peek() {
+        if **first == "game" || **first == root.name.as_str() || **first == root.class_name.as_str() {
+            iter.next();
+        }
+    }
+    for part in iter {
+        let matches: Vec<usize> = cur
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| &c.name == part)
+            .map(|(i, _)| i)
+            .collect();
+        match matches.len() {
+            0 => return Err(Error(format!("no instance named '{part}' under '{}'", cur.name))),
+            1 => {
+                index_path.push(matches[0]);
+                cur = &cur.children[matches[0]];
+            }
+            n => {
+                return Err(Error(format!(
+                    "path '{path}' is ambiguous: {n} siblings named '{part}'"
+                )))
+            }
+        }
+    }
+    Ok(index_path)
+}
+
+fn join_index_path(path: &[usize]) -> String {
+    path.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("/")
+}
+
+/// Rewrites every non-empty Ref in a cloned model subtree from
+/// place-absolute form to model-relative index paths. References that
+/// leave the subtree — or point at the subtree root itself, which the
+/// file format cannot distinguish from `None` — fail the export.
+fn rewrite_refs_for_model_export(
+    place_root: &Node,
+    subtree_abs: &[usize],
+    node: &mut Node,
+    display: &str,
+) -> Result<()> {
+    for (name, value) in node.properties.iter_mut() {
+        if let PropValue::Ref(target) = value {
+            if target.is_empty() {
+                continue;
+            }
+            let abs = ref_index_path(place_root, target).ok_or_else(|| {
+                Error(format!(
+                    "property '{name}' on '{display}' references '{target}', which does not exist"
+                ))
+            })?;
+            if !abs.starts_with(subtree_abs) {
+                return Err(Error(format!(
+                    "property '{name}' on '{display}' references '{target}' outside the exported subtree; model export would lose it"
+                )));
+            }
+            let rel = &abs[subtree_abs.len()..];
+            if rel.is_empty() {
+                return Err(Error(format!(
+                    "property '{name}' on '{display}' references the model root itself, which a model file cannot represent distinctly from None"
+                )));
+            }
+            *target = join_index_path(rel);
+        }
+    }
+    for child in node.children.iter_mut() {
+        rewrite_refs_for_model_export(place_root, subtree_abs, child, &format!("{display}/{}", child.name))?;
+    }
+    Ok(())
+}
+
+/// Rewrites model-relative refs to place-absolute index paths after a
+/// graft at `graft_abs` (the index path the model root will occupy).
+fn rewrite_refs_for_model_import(model_root: &Node, graft_abs: &[usize], node: &mut Node, display: &str) -> Result<()> {
+    for (name, value) in node.properties.iter_mut() {
+        if let PropValue::Ref(target) = value {
+            if target.is_empty() {
+                continue;
+            }
+            let rel = ref_index_path(model_root, target).ok_or_else(|| {
+                Error(format!(
+                    "property '{name}' on '{display}' references '{target}', which does not exist inside the model"
+                ))
+            })?;
+            let mut abs = graft_abs.to_vec();
+            abs.extend_from_slice(&rel);
+            *target = join_index_path(&abs);
+        }
+    }
+    for child in node.children.iter_mut() {
+        rewrite_refs_for_model_import(model_root, graft_abs, child, &format!("{display}/{}", child.name))?;
+    }
+    Ok(())
+}
+
+fn cmd_model(global: &Global, args: &[String]) -> Result<()> {
+    let Some(sub) = args.first().cloned() else {
+        return Err(usage_err("model requires a subcommand: export, inspect, import"));
+    };
+    let sub_args: Vec<String> = args.iter().skip(1).cloned().collect();
+    match sub.as_str() {
+        "export" => {
+            let parsed = parse_cmd(&sub_args, &["output", "target"], &["force"])?;
+            let file = parsed.file()?;
+            let output = parsed
+                .opt("output")
+                .map(PathBuf::from)
+                .ok_or_else(|| usage_err("model export requires --output <file.rbxm|.rbxmx>"))?;
+            let target = parsed
+                .opt("target")
+                .ok_or_else(|| usage_err("model export requires --target <path>"))?
+                .to_string();
+            if output.exists() && !parsed.has("force") {
+                return Err(Error(format!(
+                    "'{}' already exists; refusing to overwrite (pass --force)",
+                    output.display()
+                )));
+            }
+            let (place, _format) = read_place(&file)?;
+            let subtree_abs = display_to_index(&place, &target)?;
+            let target_node = place
+                .find_path(&target)
+                .map_err(|e| Error(e.0))?;
+            if target_node.class_name == "DataModel" {
+                return Err(usage_err("model export target must be below the DataModel root"));
+            }
+            let mut model = target_node.clone();
+            rewrite_refs_for_model_export(&place, &subtree_abs, &mut model, &target)?;
+            let place_dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+            let guard = check_export_integrity(&model, &place_dir);
+            if !integrity_errors(&guard).is_empty() {
+                return Err(Error(blocked_message(&guard)));
+            }
+            let warnings: Vec<JsonValue> =
+                integrity_warnings(&guard).iter().map(|i| i.to_json()).collect();
+            let out_format = write_model(&output, &model)?;
+            emit(
+                global,
+                format!(
+                    "exported model '{}' ({} instance(s)) from {} to {} ({})",
+                    model.name,
+                    model.count(),
+                    file.display(),
+                    output.display(),
+                    format_name(out_format)
+                ),
+                json!({
+                    "ok": true, "command": "model export",
+                    "input": file.display().to_string(), "output": output.display().to_string(),
+                    "target": target, "rootClass": model.class_name, "name": model.name,
+                    "instances": model.count(), "format": format_name(out_format),
+                    "integrityWarnings": warnings,
+                }),
+            );
+            Ok(())
+        }
+        "inspect" => {
+            let parsed = parse_cmd(&sub_args, &[], &[])?;
+            let file = parsed.file()?;
+            let (node, format) = read_model(&file)?;
+            emit(
+                global,
+                format!(
+                    "{} ({}) — model '{}' ({}), {} instance(s)",
+                    file.display(),
+                    format_name(format),
+                    node.name,
+                    node.class_name,
+                    node.count()
+                ),
+                json!({
+                    "ok": true, "command": "model inspect", "path": file.display().to_string(),
+                    "format": format_name(format), "rootClass": node.class_name,
+                    "name": node.name, "instances": node.count(), "tree": node,
+                }),
+            );
+            Ok(())
+        }
+        "import" => {
+            let parsed = parse_cmd(&sub_args, &["parent"], &[])?;
+            if parsed.positional.len() != 2 {
+                return Err(usage_err("model import requires <model.rbxm> and <place.rbxl>"));
+            }
+            let model_file = PathBuf::from(&parsed.positional[0]);
+            let place_file = PathBuf::from(&parsed.positional[1]);
+            let parent = parsed
+                .opt("parent")
+                .ok_or_else(|| usage_err("model import requires --parent <path>"))?
+                .to_string();
+            let (model, _mf) = read_model(&model_file)?;
+            let model_dir = model_file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+            let guard = check_export_integrity(&model, &model_dir);
+            if !integrity_errors(&guard).is_empty() {
+                return Err(Error(blocked_message(&guard)));
+            }
+            let (mut place, _pf) = read_place(&place_file)?;
+            let parent_abs = display_to_index(&place, &parent)?;
+            let parent_node = bloxcli::integrity::node_at(&place, &parent_abs)
+                .ok_or_else(|| Error(format!("parent '{parent}' not found")))?;
+            let mut graft_abs = parent_abs.clone();
+            graft_abs.push(parent_node.children.len());
+            let mut graft = model.clone();
+            rewrite_refs_for_model_import(&model, &graft_abs, &mut graft, &model.name)?;
+            let parent_mut = {
+                let mut cur = &mut place;
+                for &idx in &parent_abs {
+                    cur = &mut cur.children[idx];
+                }
+                cur
+            };
+            parent_mut.children.push(graft);
+            // The engine is the runtime source of truth: verify the
+            // merged tree loads and snapshot its canonical form.
+            let mut engine = spawn_engine(global)?;
+            let load = engine.load(&place).and_then(|_| engine.snapshot());
+            engine.shutdown();
+            let tree = load?;
+            let place_dir = place_file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+            let guard = check_export_integrity(&tree, &place_dir);
+            if !integrity_errors(&guard).is_empty() {
+                return Err(Error(blocked_message(&guard)));
+            }
+            write_mutation(&place_file, &tree)?;
+            emit(
+                global,
+                format!(
+                    "imported model '{}' into {} under {} ({} instance(s) total)",
+                    model.name,
+                    place_file.display(),
+                    parent,
+                    tree.count()
+                ),
+                json!({
+                    "ok": true, "command": "model import",
+                    "model": model_file.display().to_string(),
+                    "path": place_file.display().to_string(),
+                    "parent": parent, "name": model.name, "rootClass": model.class_name,
+                    "instances": tree.count(),
+                }),
+            );
+            Ok(())
+        }
+        other => Err(usage_err(&format!(
+            "unknown model subcommand '{other}' (export, inspect, import)"
+        ))),
+    }
+}
 
 // ---------- Phase 3: rendering commands ----------
 
@@ -1830,6 +2254,20 @@ fn cmd_validate(global: &Global, args: &[String]) -> Result<()> {
             }));
         }
     }
+    // Export integrity guard (Phase 17): dangling references, corrupted
+    // terrain payloads, unresolved assets, source-less scripts.
+    let place_dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let guard = check_export_integrity(&node, &place_dir);
+    let integrity_json = json!({
+        "errors": integrity_errors(&guard).len(),
+        "warnings": integrity_warnings(&guard).len(),
+    });
+    for issue in &guard {
+        let key = format!("{}|{}", issue.path, issue.message);
+        if seen.insert(key) {
+            merged.push(issue.to_json());
+        }
+    }
     let has_errors = merged
         .iter()
         .any(|i| i.get("severity").and_then(|s| s.as_str()) == Some("error"));
@@ -1858,6 +2296,7 @@ fn cmd_validate(global: &Global, args: &[String]) -> Result<()> {
             "ok": valid, "command": "validate", "path": file.display().to_string(),
             "format": format_name(format), "valid": valid,
             "instances": node.count(), "issues": issues,
+            "integrity": integrity_json,
         }),
     );
     if valid {

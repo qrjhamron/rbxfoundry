@@ -1,8 +1,10 @@
 pub mod convert;
 pub mod engine;
+pub mod integrity;
 pub mod history;
 pub mod mcp;
 pub mod net;
+pub mod templates;
 pub mod play;
 pub mod rbxio;
 pub mod tree;

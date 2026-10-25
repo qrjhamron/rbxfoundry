@@ -298,6 +298,95 @@ std::string strip_rich_text(const std::string& text) {
     return out;
 }
 
+// ------------------------------------------------------------- RichText --
+// Minimal Roblox RichText subset (Phase 16): <b>, <i>, <u>,
+// <font color="#RRGGBB"> / rgb(r,g,b), <br>, and the standard entities.
+// Unsupported tags/attributes are stripped (same visible text as
+// Roblox, without their styling) — never substituted.
+struct RichSpan {
+    std::string text;
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool has_color = false;
+    std::array<float, 3> color{0, 0, 0};
+};
+
+bool parse_rich_color(const std::string& attr, std::array<float, 3>& out) {
+    size_t hash = attr.find('#');
+    if (hash != std::string::npos && hash + 7 <= attr.size()) {
+        auto hex = [&](size_t at) { return std::stoi(attr.substr(at, 2), nullptr, 16); };
+        try {
+            out = {hex(hash + 1) / 255.0f, hex(hash + 3) / 255.0f, hex(hash + 5) / 255.0f};
+            return true;
+        } catch (...) { return false; }
+    }
+    size_t rgb = attr.find("rgb(");
+    if (rgb != std::string::npos) {
+        float r = 0, g = 0, b = 0;
+        if (std::sscanf(attr.c_str() + rgb, "rgb(%f,%f,%f)", &r, &g, &b) == 3) {
+            out = {r / 255.0f, g / 255.0f, b / 255.0f};
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<RichSpan> parse_rich_text(const std::string& raw) {
+    std::vector<RichSpan> spans;
+    RichSpan cur;
+    auto flush = [&]() {
+        if (!cur.text.empty()) { spans.push_back(cur); cur.text.clear(); }
+    };
+    size_t i = 0;
+    while (i < raw.size()) {
+        if (raw[i] == '<') {
+            size_t end = raw.find('>', i);
+            if (end == std::string::npos) { cur.text += raw.substr(i); break; }
+            std::string tag = raw.substr(i + 1, end - i - 1);
+            flush();
+            std::string low;
+            for (char c : tag) low += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (low == "b") cur.bold = true;
+            else if (low == "/b") cur.bold = false;
+            else if (low == "i") cur.italic = true;
+            else if (low == "/i") cur.italic = false;
+            else if (low == "u") cur.underline = true;
+            else if (low == "/u") cur.underline = false;
+            else if (low == "br" || low == "br/") cur.text += "\n";
+            else if (low.rfind("font", 0) == 0) {
+                std::array<float, 3> col;
+                if (parse_rich_color(low, col)) { cur.has_color = true; cur.color = col; }
+            } else if (low == "/font") {
+                cur.has_color = false;
+            }
+            i = end + 1;
+        } else if (raw[i] == '&') {
+            if (raw.compare(i, 4, "&lt;") == 0) { cur.text += '<'; i += 4; }
+            else if (raw.compare(i, 4, "&gt;") == 0) { cur.text += '>'; i += 4; }
+            else if (raw.compare(i, 5, "&amp;") == 0) { cur.text += '&'; i += 5; }
+            else if (raw.compare(i, 6, "&quot;") == 0) { cur.text += '"'; i += 6; }
+            else { cur.text += raw[i]; ++i; }
+        } else {
+            cur.text += raw[i];
+            ++i;
+        }
+    }
+    flush();
+    return spans;
+}
+
+std::string rich_font_for(const RichSpan& span, const std::string& base_font) {
+    const char* bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+    const char* oblique = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf";
+    const char* want = span.bold ? bold : (span.italic ? oblique : nullptr);
+    if (want) {
+        FILE* f = fopen(want, "rb");
+        if (f) { fclose(f); return want; }
+    }
+    return base_font;
+}
+
 std::vector<std::string> wrap_lines(const std::string& text, float size_px, const std::string& font,
                                     float max_width, bool wrapped) {
     std::vector<std::string> lines;
@@ -470,6 +559,43 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
                 q.corner_radius = radius;
                 q.owner_path = path;
                 int64_t scale_type = uenum(inst, "ScaleType", 0);
+                bool sliced = false;
+                if (scale_type == 1) { // Slice (nine-slice, Phase 16)
+                    auto center = uudim2(inst, "SliceCenter", {0, 0, 0, 0});
+                    float slice_scale = static_cast<float>(ufloat(inst, "SliceScale", 1.0));
+                    // PNG dimensions from the IHDR header.
+                    uint32_t iw = 0, ih = 0;
+                    if (FILE* pf = fopen(resolved.c_str(), "rb")) {
+                        uint8_t hdr[24]{};
+                        if (std::fread(hdr, 1, 24, pf) == 24 && hdr[1] == 'P' && hdr[2] == 'N' && hdr[3] == 'G') {
+                            iw = (static_cast<uint32_t>(hdr[16]) << 24) | (hdr[17] << 16) | (hdr[18] << 8) | hdr[19];
+                            ih = (static_cast<uint32_t>(hdr[20]) << 24) | (hdr[21] << 16) | (hdr[22] << 8) | hdr[23];
+                        }
+                        fclose(pf);
+                    }
+                    if (iw > 0 && ih > 0 && center[2] > center[0] && center[3] > center[1]) {
+                        float sx[4] = {0, static_cast<float>(center[0]), static_cast<float>(center[2]), static_cast<float>(iw)};
+                        float sy[4] = {0, static_cast<float>(center[1]), static_cast<float>(center[3]), static_cast<float>(ih)};
+                        float bl = sx[1] * slice_scale, br = (iw - sx[2]) * slice_scale;
+                        float bt = sy[1] * slice_scale, bb = (ih - sy[2]) * slice_scale;
+                        float dx[4] = {rect.x, rect.x + bl, rect.x + rect.w - br, rect.x + rect.w};
+                        float dy[4] = {rect.y, rect.y + bt, rect.y + rect.h - bb, rect.y + rect.h};
+                        for (int row = 0; row < 3; ++row) {
+                            for (int col = 0; col < 3; ++col) {
+                                UiQuad cell = q;
+                                cell.x = dx[col]; cell.y = dy[row];
+                                cell.width = dx[col + 1] - dx[col];
+                                cell.height = dy[row + 1] - dy[row];
+                                cell.u0 = sx[col] / iw; cell.u1 = sx[col + 1] / iw;
+                                cell.v0 = sy[row] / ih; cell.v1 = sy[row + 1] / ih;
+                                if (cell.width > 0 && cell.height > 0) add_quad(ctx, cell, clip, zkey);
+                            }
+                        }
+                        sliced = true;
+                    }
+                    ctx.scene.warnings.push_back(path + ": SliceCenter/texture size unavailable; rendered as stretch");
+                }
+                if (!sliced) {
                 auto rect_offset = uvec2(inst, "ImageRectOffset", {0, 0});
                 auto rect_size = uvec2(inst, "ImageRectSize", {0, 0});
                 if (scale_type == 2) { // Tile
@@ -482,6 +608,7 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
                     ctx.scene.warnings.push_back(path + ": ImageRectSize sub-rectangle used without a known texture size; rendered as full-texture stretch");
                 }
                 add_quad(ctx, q, clip, zkey);
+                }
             } else {
                 ctx.scene.warnings.push_back(path + ": Image '" + image + "' not found locally; image not drawn (not substituted)");
             }
@@ -517,6 +644,124 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
         auto color = ucolor(inst, "TextColor3", {0, 0, 0});
         float a = (1.0f - static_cast<float>(ufloat(inst, "TextTransparency", 0.0))) * own_alpha;
         if (a <= 0.003f) return;
+        // RichText layout (Phase 16): styled spans wrapped by word,
+        // one TextJob per style run; underlines are thin quads.
+        if (ubool(inst, "RichText", false) && raw_text.find('<') != std::string::npos) {
+            auto spans = parse_rich_text(raw_text);
+            struct RRun { std::string text; RichSpan style; float width = 0; };
+            auto rich_wrap = [&](float sz) {
+                struct Tok { std::string word; RichSpan style; bool space_before; bool break_after; };
+                std::vector<Tok> toks;
+                bool carry_space = false;
+                for (const auto& span : spans) {
+                    std::string cur_word;
+                    bool space_before = carry_space;
+                    auto push_word = [&]() {
+                        if (!cur_word.empty()) {
+                            toks.push_back({cur_word, span, space_before, false});
+                            cur_word.clear();
+                            space_before = false;
+                        }
+                    };
+                    for (char c : span.text) {
+                        if (c == '\n') { push_word(); toks.push_back({"", span, false, true}); space_before = false; }
+                        else if (c == ' ') { push_word(); space_before = true; }
+                        else cur_word += c;
+                    }
+                    push_word();
+                    carry_space = space_before;
+                }
+                std::vector<std::vector<RRun>> lines;
+                std::vector<RRun> line;
+                float line_w = 0;
+                auto flush_line = [&]() { lines.push_back(line); line.clear(); line_w = 0; };
+                for (const auto& tok : toks) {
+                    if (tok.break_after) { flush_line(); continue; }
+                    float space_w = (tok.space_before && !line.empty())
+                        ? measure_text(" ", sz, rich_font_for(tok.style, font)) : 0;
+                    float word_w = measure_text(tok.word, sz, rich_font_for(tok.style, font));
+                    if ((wrapped || scaled) && !line.empty() && line_w + space_w + word_w > content.w) {
+                        flush_line();
+                        space_w = 0;
+                    }
+                    std::string piece = (space_w > 0 ? " " : "") + tok.word;
+                    float piece_w = space_w + word_w;
+                    if (!line.empty() && line.back().style.bold == tok.style.bold &&
+                        line.back().style.italic == tok.style.italic &&
+                        line.back().style.underline == tok.style.underline &&
+                        line.back().style.has_color == tok.style.has_color &&
+                        line.back().style.color == tok.style.color) {
+                        line.back().text += piece;
+                        line.back().width += piece_w;
+                    } else {
+                        line.push_back({piece, tok.style, piece_w});
+                    }
+                    line_w += piece_w;
+                }
+                flush_line();
+                return lines;
+            };
+            float rsize = size;
+            if (scaled) {
+                float lo = std::max(min_size, 1.0f), hi = std::max(max_size, lo), best = lo;
+                for (int iter = 0; iter < 12; ++iter) {
+                    float mid = (lo + hi) / 2;
+                    auto lines = rich_wrap(mid);
+                    bool fits = static_cast<float>(lines.size()) * mid * 1.25f <= content.h;
+                    for (const auto& line : lines) {
+                        float w = 0;
+                        for (const auto& run : line) w += run.width;
+                        fits = fits && w <= content.w;
+                    }
+                    if (fits) { best = mid; lo = mid; } else { hi = mid; }
+                }
+                rsize = best;
+            }
+            auto rich_lines = rich_wrap(rsize);
+            int64_t ryalign = uenum(inst, "TextYAlignment", 1);
+            int64_t rxalign = uenum(inst, "TextXAlignment", 0);
+            float rline_h = rsize * 1.25f;
+            float rtotal_h = rline_h * static_cast<float>(rich_lines.size());
+            float rstart_y = content.y;
+            if (ryalign == 1) rstart_y = content.y + (content.h - rtotal_h) / 2;
+            else if (ryalign == 2) rstart_y = content.y + (content.h - rtotal_h);
+            for (size_t i = 0; i < rich_lines.size(); ++i) {
+                float line_w = 0;
+                for (const auto& run : rich_lines[i]) line_w += run.width;
+                float lx = content.x;
+                if (rxalign == 1) lx = content.x + (content.w - line_w) / 2;
+                else if (rxalign == 2) lx = content.x + (content.w - line_w);
+                float cx = lx;
+                for (const auto& run : rich_lines[i]) {
+                    if (run.text.empty()) { continue; }
+                    TextJob job;
+                    job.text = run.text;
+                    job.x = cx;
+                    job.y = rstart_y + static_cast<float>(i) * rline_h + rsize;
+                    job.size_px = rsize;
+                    auto rc = run.style.has_color ? run.style.color : color;
+                    job.color = {rc[0], rc[1], rc[2], a};
+                    job.font_path = rich_font_for(run.style, font);
+                    job.clip_x = clip.x; job.clip_y = clip.y; job.clip_w = clip.w; job.clip_h = clip.h;
+                    job.sort_key = zkey;
+                    job.owner_path = path;
+                    job.sequence = ctx.sequence++;
+                    ctx.text_jobs.push_back(job);
+                    if (run.style.underline) {
+                        UiQuad underline;
+                        underline.x = cx;
+                        underline.y = rstart_y + static_cast<float>(i) * rline_h + rsize * 1.12f;
+                        underline.width = run.width;
+                        underline.height = std::max(1.0f, rsize / 14.0f);
+                        underline.color = {rc[0], rc[1], rc[2], a};
+                        underline.owner_path = path;
+                        add_quad(ctx, underline, clip, zkey);
+                    }
+                    cx += run.width;
+                }
+            }
+            return;
+        }
         auto lines = wrap_lines(text, size, font, content.w, wrapped || scaled);
         // Truncation (AtEnd) for a single unwrapped overflowing line.
         if (uenum(inst, "TextTruncate", 0) == 1 && !wrapped && lines.size() == 1) {

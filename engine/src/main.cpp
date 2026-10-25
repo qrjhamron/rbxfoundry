@@ -225,6 +225,20 @@ int main(int argc, char** argv) {
             std::string name = "Place";
             if (const Json* n = params.find("name")) name = n->as_string();
             model.reset(name);
+            // Optional offline place metadata (never invented by the
+            // engine: callers pass explicit values, defaults are the
+            // unpublished zeros Roblox reports for local files).
+            {
+                std::string ignored;
+                if (const Json* v = params.find("placeId"))
+                    model.set_property(model.root(), "PlaceId", Variant::make_int64(v->as_int()), ignored);
+                if (const Json* v = params.find("gameId"))
+                    model.set_property(model.root(), "GameId", Variant::make_string(v->as_string()), ignored);
+                if (const Json* v = params.find("placeVersion"))
+                    model.set_property(model.root(), "PlaceVersion", Variant::make_int64(v->as_int()), ignored);
+                if (const Json* v = params.find("jobId"))
+                    model.set_property(model.root(), "JobId", Variant::make_string(v->as_string()), ignored);
+            }
             has_model = true;
             Json result = Json::object();
             result.set("tree", model.snapshot());
@@ -606,6 +620,9 @@ int main(int argc, char** argv) {
                         if (event == "died" && physics->humanoid())
                             runtime->fire_event(physics->humanoid(), "Died");
                     }
+                    if (physics->humanoid())
+                        runtime->set_humanoid_state(physics->humanoid(),
+                                                    physics->character_info().state);
                 }
                 Json result = Json::object();
                 result.set("character", character_json());
@@ -706,6 +723,9 @@ int main(int argc, char** argv) {
                             if (event == "died" && physics->humanoid_at(c))
                                 runtime->fire_event(physics->humanoid_at(c), "Died");
                         }
+                        if (physics->humanoid_at(c))
+                            runtime->set_humanoid_state(physics->humanoid_at(c),
+                                                        physics->character_info_at(c).state);
                     }
                     for (auto& [touched, other] : physics->take_touch_events()) {
                         Json args = Json::array();
