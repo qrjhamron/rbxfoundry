@@ -477,10 +477,13 @@ bool lua_to_variant(lua_State* L, int idx, ValueType type, Variant& out, std::st
     switch (type) {
         case ValueType::Bool: out = Variant::make_bool(lua_toboolean(L, idx) != 0); return true;
         case ValueType::Int32: case ValueType::Int64:
-        case ValueType::Faces: case ValueType::Axes:
-            out = Variant::make_int64(static_cast<int64_t>(luaL_checknumber(L, idx))); return true;
+        case ValueType::Faces: case ValueType::Axes: {
+            double dv = luaL_checknumber(L, idx);
+            if (dv != std::floor(dv)) { error = "integer property cannot be assigned a non-integral number"; return false; }
+            out = Variant::make_int64(static_cast<int64_t>(dv)); out.type = type; return true;
+        }
         case ValueType::Float32: case ValueType::Float64:
-            out = Variant::make_float64(luaL_checknumber(L, idx)); return true;
+            out = Variant::make_float64(luaL_checknumber(L, idx)); out.type = type; return true;
         case ValueType::String: case ValueType::ContentId: {
             size_t len = 0;
             const char* s = luaL_checklstring(L, idx, &len);

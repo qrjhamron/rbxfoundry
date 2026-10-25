@@ -14,6 +14,8 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                 runtime_->set_physics(physics_.get());
                 Json result = Json::object();
                 result.set("bodies", Json(static_cast<int64_t>(physics_->body_count())));
+                result.set("skippedBodies", Json(static_cast<int64_t>(physics_->skipped_bodies())));
+                result.set("bodyLimitHit", Json(physics_->body_limit_hit()));
                 result.set("character", character_json());
                 return Reply::ok(std::move(result));
             }

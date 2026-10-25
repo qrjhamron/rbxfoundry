@@ -254,7 +254,14 @@ struct PhysicsWorld::Impl {
     ObjectVsBPFilter object_vs_bp;
     ObjectPairFilter pair_filter;
     PhysicsSystem physics;
-    std::map<Instance*, BodyID> bodies;
+    // Stable Instance -> bodies mapping (Gate A4): an Instance may own
+    // many bodies (Terrain voxels) but never silently overwrite.
+    std::map<Instance*, std::vector<BodyID>> bodies;
+    std::map<Instance*, uint64_t> body_signatures;
+    size_t skipped_bodies = 0;
+    bool body_limit_hit = false;
+    uint64_t terrain_signature = 0;
+    bool terrain_built = false;
     std::map<BodyID, Instance*> by_id;
     BodyFilter body_filter;
     ShapeFilter shape_filter;
@@ -392,7 +399,7 @@ void build_constraints(DataModel& model, PhysicsWorld::Impl& im) {
     BodyInterface& bodies = im.physics.GetBodyInterfaceNoLock();
     auto body_of = [&](Instance* inst) -> BodyID {
         auto it = im.bodies.find(inst);
-        return it == im.bodies.end() ? BodyID() : it->second;
+        return (it == im.bodies.end() || it->second.empty()) ? BodyID() : it->second.front();
     };
     for (Instance* inst : all) {
         if (inst->class_name == "WeldConstraint") {
@@ -471,39 +478,170 @@ void build_constraints(DataModel& model, PhysicsWorld::Impl& im) {
     }
 }
 
+
+// ------------------------------------------------ Gate A3/A4: body sync --
+// Explicit dirty tracking by signature: every Workspace BasePart gets a
+// signature over the properties that determine its Jolt body. sync_bodies
+// diffs the live tree against the built mapping and creates, recreates
+// or destroys exactly the bodies that changed (never a full rebuild).
+
+uint64_t part_signature(Instance& inst) {
+    auto size = prop_vec3(inst, "Size", {4, 1, 2});
+    Variant cf = cframe_of(inst);
+    const Variant* phys = prop(inst, "CustomPhysicalProperties");
+    const Variant* group = prop(inst, "CollisionGroup");
+    char buf[640];
+    std::snprintf(buf, sizeof(buf),
+        "%s|shape=%lld|size=%.4f,%.4f,%.4f|cf=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f|anch=%d|col=%d|grp=%s|phys=%s",
+        inst.class_name.c_str(), (long long)prop_enum(inst, "Shape", 1),
+        size[0], size[1], size[2],
+        cf.position[0], cf.position[1], cf.position[2],
+        cf.rotation[0], cf.rotation[1], cf.rotation[2], cf.rotation[3], cf.rotation[4],
+        cf.rotation[5], cf.rotation[6], cf.rotation[7], cf.rotation[8],
+        prop_bool(inst, "Anchored", false) ? 1 : 0, prop_bool(inst, "CanCollide", true) ? 1 : 0,
+        (group && group->type == ValueType::String) ? group->string_value.c_str() : "",
+        phys ? phys->complex_value.dump().c_str() : "");
+    uint64_t h = 1469598103934665603ULL;
+    for (const char* c = buf; *c; ++c) { h ^= (uint8_t)*c; h *= 1099511628211ULL; }
+    return h;
+}
+
+bool create_part_body(PhysicsWorld::Impl& im, Instance* inst) {
+    if (im.by_id.size() >= 4096) { im.skipped_bodies += 1; im.body_limit_hit = true; return false; }
+    BodyInterface& bodies = im.physics.GetBodyInterface();
+    auto size = prop_vec3(*inst, "Size", {4, 1, 2});
+    Variant cf = cframe_of(*inst);
+    RefConst<Shape> shape;
+    Quat extra = Quat::sIdentity();
+    if (inst->class_name == "Part" && prop_enum(*inst, "Shape", 1) == 0) {
+        shape = new SphereShape(static_cast<float>(std::min({size[0], size[1], size[2]}) / 2.0));
+    } else if (inst->class_name == "Part" && prop_enum(*inst, "Shape", 1) == 2) {
+        shape = new CylinderShape(static_cast<float>(size[0] / 2.0),
+                                  static_cast<float>(std::min(size[1], size[2]) / 2.0));
+        extra = Quat::sRotation(Vec3::sAxisZ(), -1.5707963f);
+    } else {
+        shape = new BoxShape(Vec3(static_cast<float>(size[0] / 2), static_cast<float>(size[1] / 2),
+                                  static_cast<float>(size[2] / 2)));
+    }
+    bool anchored = prop_bool(*inst, "Anchored", false);
+    BodyCreationSettings settings(
+        shape, Vec3(static_cast<float>(cf.position[0]), static_cast<float>(cf.position[1]),
+                    static_cast<float>(cf.position[2])),
+        quat_from_cframe(cf) * extra,
+        anchored ? EMotionType::Static : EMotionType::Dynamic,
+        anchored ? Layers::NON_MOVING : Layers::MOVING);
+    {
+        const Variant* g = prop(*inst, "CollisionGroup");
+        std::string name = (g && g->type == ValueType::String && !g->string_value.empty())
+                               ? g->string_value : "Default";
+        auto git = im.group_ids.find(name);
+        uint32 gid = git != im.group_ids.end() ? git->second : 0;
+        settings.mCollisionGroup = CollisionGroup(im.group_filter, gid, 0);
+    }
+    PhysProps phys = physical_props(*inst);
+    if (!anchored) {
+        settings.mMotionQuality = EMotionQuality::LinearCast;
+        double volume = std::max(0.001, size[0] * size[1] * size[2]);
+        settings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+        settings.mMassPropertiesOverride.mMass = static_cast<float>(std::max(0.05, volume * phys.density));
+    }
+    settings.mFriction = static_cast<float>(phys.friction);
+    settings.mRestitution = static_cast<float>(phys.elasticity);
+    BodyID id = bodies.CreateAndAddBody(settings, EActivation::Activate);
+    if (id.IsInvalid()) { im.skipped_bodies += 1; return false; }
+    im.bodies[inst].push_back(id);
+    im.by_id[id] = inst;
+    if (!anchored) {
+        if (const Variant* v = prop(*inst, "AssemblyLinearVelocity")) {
+            if (v->type == ValueType::Vector3)
+                bodies.SetLinearVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+        }
+        if (const Variant* v = prop(*inst, "AssemblyAngularVelocity")) {
+            if (v->type == ValueType::Vector3)
+                bodies.SetAngularVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+        }
+    }
+    return true;
+}
+
+void remove_instance_bodies(PhysicsWorld::Impl& im, Instance* inst) {
+    auto it = im.bodies.find(inst);
+    if (it == im.bodies.end()) { im.body_signatures.erase(inst); return; }
+    BodyInterface& bodies = im.physics.GetBodyInterface();
+    for (BodyID id : it->second) {
+        bodies.RemoveBody(id);
+        bodies.DestroyBody(id);
+        im.by_id.erase(id);
+        im.touching.erase(std::make_pair(id, id)); // pairs cleaned below by id scan
+    }
+    // Drop any touching pairs involving the removed bodies.
+    for (auto itr = im.touching.begin(); itr != im.touching.end();) {
+        bool stale = false;
+        for (BodyID id : it->second) if (itr->first == id || itr->second == id) stale = true;
+        if (stale) itr = im.touching.erase(itr); else ++itr;
+    }
+    im.bodies.erase(it);
+    im.body_signatures.erase(inst);
+}
+
+uint64_t terrain_signature_of(DataModel& model, bool& present) {
+    present = false;
+    Instance* terrain = find_terrain(model);
+    if (!terrain) return 0;
+    TerrainGrid grid; std::string error;
+    if (!terrain_load(*terrain, grid, error) || grid.empty()) return 0;
+    present = true;
+    uint64_t h = 1469598103934665603ULL ^ grid.cells.size();
+    for (const auto& [key, value] : grid.cells) {
+        auto [x, y, z] = key;
+        uint64_t k = (uint64_t)(uint32_t)x * 73856093ULL ^ (uint64_t)(uint32_t)y * 19349663ULL ^
+                     (uint64_t)(uint32_t)z * 83492791ULL ^ value.first * 31ULL ^ value.second;
+        h ^= k; h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+void build_terrain_bodies(PhysicsWorld::Impl& im, DataModel& model) {
+    Instance* terrain = find_terrain(model);
+    if (!terrain) return;
+    TerrainGrid grid; std::string terr_error;
+    if (!terrain_load(*terrain, grid, terr_error) || grid.empty()) return;
+    BodyInterface& bodies = im.physics.GetBodyInterface();
+    RefConst<Shape> voxel_shape = new BoxShape(Vec3(
+        static_cast<float>(kVoxelSize / 2), static_cast<float>(kVoxelSize / 2),
+        static_cast<float>(kVoxelSize / 2)));
+    for (const auto& [key, value] : grid.cells) {
+        auto [x, y, z] = key;
+        bool exposed = !grid.solid(x, y + 1, z) || !grid.solid(x + 1, y, z) ||
+                       !grid.solid(x - 1, y, z) || !grid.solid(x, y, z + 1) ||
+                       !grid.solid(x, y, z - 1) || !grid.solid(x, y - 1, z);
+        if (!exposed) continue;
+        if (im.by_id.size() >= 4096) { im.skipped_bodies += 1; im.body_limit_hit = true; continue; }
+        auto centre = voxel_center(x, y, z);
+        BodyCreationSettings settings(
+            voxel_shape,
+            Vec3(static_cast<float>(centre[0]), static_cast<float>(centre[1]),
+                 static_cast<float>(centre[2])),
+            Quat::sIdentity(), EMotionType::Static, Layers::NON_MOVING);
+        BodyID id = bodies.CreateAndAddBody(settings, EActivation::DontActivate);
+        if (!id.IsInvalid()) {
+            im.bodies[terrain].push_back(id);
+            im.by_id[id] = terrain;
+        }
+    }
+}
+
 void PhysicsWorld::build_world() {
     if (impl_->built) return;
     impl_->built = true;
     Instance* workspace = workspace_of(model_);
     if (!workspace) return;
     // Terrain voxel collision: static boxes for voxels exposed to air.
-    if (Instance* terrain = find_terrain(model_)) {
-        TerrainGrid grid;
-        std::string terr_error;
-        if (terrain_load(*terrain, grid, terr_error) && !grid.empty()) {
-            BodyInterface& bodies = impl_->physics.GetBodyInterface();
-            RefConst<Shape> voxel_shape = new BoxShape(Vec3(
-                static_cast<float>(kVoxelSize / 2), static_cast<float>(kVoxelSize / 2),
-                static_cast<float>(kVoxelSize / 2)));
-            for (const auto& [key, value] : grid.cells) {
-                auto [x, y, z] = key;
-                bool exposed = !grid.solid(x, y + 1, z) || !grid.solid(x + 1, y, z) ||
-                               !grid.solid(x - 1, y, z) || !grid.solid(x, y, z + 1) ||
-                               !grid.solid(x, y, z - 1) || !grid.solid(x, y - 1, z);
-                if (!exposed) continue;
-                auto centre = voxel_center(x, y, z);
-                BodyCreationSettings settings(
-                    voxel_shape,
-                    Vec3(static_cast<float>(centre[0]), static_cast<float>(centre[1]),
-                         static_cast<float>(centre[2])),
-                    Quat::sIdentity(), EMotionType::Static, Layers::NON_MOVING);
-                BodyID id = bodies.CreateAndAddBody(settings, EActivation::DontActivate);
-                if (!id.IsInvalid()) {
-                    impl_->bodies[terrain] = id;
-                    impl_->by_id[id] = terrain;
-                }
-            }
-        }
+    {
+        bool present = false;
+        impl_->terrain_signature = terrain_signature_of(model_, present);
+        build_terrain_bodies(*impl_, model_);
+        impl_->terrain_built = true;
     }
     // Collision groups (Phase 15): names from BasePart CollisionGroup
     // properties; non-collidable pairs from PhysicsService attributes
@@ -559,69 +697,98 @@ void PhysicsWorld::build_world() {
             if (in_character) continue;
         }
         if (!prop_bool(*inst, "CanCollide", true)) continue;
-        auto size = prop_vec3(*inst, "Size", {4, 1, 2});
-        Variant cf = cframe_of(*inst);
-        RefConst<Shape> shape;
-        Quat extra = Quat::sIdentity();
-        if (inst->class_name == "Part" && prop_enum(*inst, "Shape", 1) == 0) {
-            shape = new SphereShape(static_cast<float>(std::min({size[0], size[1], size[2]}) / 2.0));
-        } else if (inst->class_name == "Part" && prop_enum(*inst, "Shape", 1) == 2) {
-            shape = new CylinderShape(static_cast<float>(size[0] / 2.0),
-                                      static_cast<float>(std::min(size[1], size[2]) / 2.0));
-            extra = Quat::sRotation(Vec3::sAxisZ(), -1.5707963f); // Jolt Y axis -> Roblox X axis
+        if (create_part_body(*impl_, inst))
+            impl_->body_signatures[inst] = part_signature(*inst);
+    }
+    build_constraints(model_, *impl_);
+}
+
+
+void PhysicsWorld::sync_bodies() {
+    if (!impl_->built) { build_world(); return; }
+    Impl& im = *impl_;
+    Instance* workspace = workspace_of(model_);
+    if (!workspace) return;
+    auto in_character = [&](Instance* inst) {
+        for (const Instance* cur = inst; cur; cur = cur->parent)
+            for (const Instance* model : im.character_models)
+                if (cur == model) return true;
+        return false;
+    };
+    // Terrain: rebuild voxel bodies only when the grid changed.
+    {
+        bool present = false;
+        uint64_t sig = terrain_signature_of(model_, present);
+        if (sig != im.terrain_signature) {
+            if (Instance* terrain = find_terrain(model_)) remove_instance_bodies(im, terrain);
+            if (present) build_terrain_bodies(im, model_);
+            im.terrain_signature = sig;
+        }
+    }
+    Instance* terrain = find_terrain(model_);
+    std::set<Instance*> live;
+    std::vector<Instance*> stack{workspace};
+    while (!stack.empty()) {
+        Instance* inst = stack.back(); stack.pop_back();
+        for (const auto& child : inst->children) stack.push_back(child.get());
+        if (inst == workspace || !DataModel::is_base_part(inst->class_name)) continue;
+        if (in_character(inst)) continue;
+        live.insert(inst);
+        uint64_t sig = part_signature(*inst);
+        auto it = im.bodies.find(inst);
+        bool has = it != im.bodies.end() && !it->second.empty();
+        if (!prop_bool(*inst, "CanCollide", true)) {
+            if (has) remove_instance_bodies(im, inst);
+            continue;
+        }
+        if (!has) {
+            if (create_part_body(im, inst)) im.body_signatures[inst] = sig;
         } else {
-            // Block, WedgePart, CornerWedgePart, MeshPart, SpawnLocation:
-            // box collider (documented approximation for wedges/meshes).
-            shape = new BoxShape(Vec3(static_cast<float>(size[0] / 2), static_cast<float>(size[1] / 2),
-                                      static_cast<float>(size[2] / 2)));
-        }
-        bool anchored = prop_bool(*inst, "Anchored", false);
-        BodyCreationSettings settings(
-            shape, Vec3(static_cast<float>(cf.position[0]), static_cast<float>(cf.position[1]),
-                        static_cast<float>(cf.position[2])),
-            quat_from_cframe(cf) * extra,
-            anchored ? EMotionType::Static : EMotionType::Dynamic,
-            anchored ? Layers::NON_MOVING : Layers::MOVING);
-        {
-            const Variant* g = prop(*inst, "CollisionGroup");
-            std::string name = (g && g->type == ValueType::String && !g->string_value.empty())
-                                   ? g->string_value : "Default";
-            auto git = impl_->group_ids.find(name);
-            uint32 gid = git != impl_->group_ids.end() ? git->second : 0;
-            settings.mCollisionGroup = CollisionGroup(impl_->group_filter, gid, 0);
-        }
-        if (!anchored) {
-            settings.mMotionQuality = EMotionQuality::LinearCast;
-            // Mass from volume * density (Roblox-like): honour
-            // CustomPhysicalProperties density when present.
-            PhysProps phys = physical_props(*inst);
-            double volume = std::max(0.001, size[0] * size[1] * size[2]);
-            settings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-            settings.mMassPropertiesOverride.mMass = static_cast<float>(std::max(0.05, volume * phys.density));
-            settings.mFriction = static_cast<float>(phys.friction);
-            settings.mRestitution = static_cast<float>(phys.elasticity);
-        } else {
-            PhysProps phys = physical_props(*inst);
-            settings.mFriction = static_cast<float>(phys.friction);
-            settings.mRestitution = static_cast<float>(phys.elasticity);
-        }
-        BodyID id = bodies.CreateAndAddBody(settings, EActivation::Activate);
-        if (!id.IsInvalid()) {
-            impl_->bodies[inst] = id;
-            impl_->by_id[id] = inst;
-            if (!anchored) {
-                if (const Variant* v = prop(*inst, "AssemblyLinearVelocity")) {
-                    if (v->type == ValueType::Vector3)
-                        bodies.SetLinearVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+            auto sit = im.body_signatures.find(inst);
+            if (sit == im.body_signatures.end() || sit->second != sig) {
+                // Recreate (rotation/size/anchored/collision changed),
+                // preserving dynamic velocity across the rebuild.
+                Vec3 lin(0, 0, 0), ang(0, 0, 0);
+                bool was_dynamic = false;
+                if (!it->second.empty()) {
+                    BodyInterface& bi = im.physics.GetBodyInterface();
+                    was_dynamic = bi.GetMotionType(it->second.front()) == EMotionType::Dynamic;
+                    if (was_dynamic) { lin = bi.GetLinearVelocity(it->second.front()); ang = bi.GetAngularVelocity(it->second.front()); }
                 }
-                if (const Variant* v = prop(*inst, "AssemblyAngularVelocity")) {
-                    if (v->type == ValueType::Vector3)
-                        bodies.SetAngularVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+                remove_instance_bodies(im, inst);
+                if (create_part_body(im, inst)) {
+                    im.body_signatures[inst] = sig;
+                    if (was_dynamic && !prop_bool(*inst, "Anchored", false)) {
+                        BodyInterface& bi = im.physics.GetBodyInterface();
+                        auto nit = im.bodies.find(inst);
+                        if (nit != im.bodies.end() && !nit->second.empty()) {
+                            bi.SetLinearVelocity(nit->second.front(), lin);
+                            bi.SetAngularVelocity(nit->second.front(), ang);
+                        }
+                    }
                 }
             }
         }
     }
-    build_constraints(model_, *impl_);
+    // Deleted or reparented-out instances: keys are compared by pointer
+    // value only (never dereferenced), so dangling entries are safe.
+    std::vector<Instance*> stale;
+    for (const auto& [inst, ids] : im.bodies) {
+        (void)ids;
+        if (inst == terrain) continue;
+        if (!live.count(inst)) stale.push_back(inst);
+    }
+    for (Instance* inst : stale) remove_instance_bodies(im, inst);
+    if (!stale.empty()) {
+        // Removing a support can leave resting bodies asleep in
+        // mid-air (Jolt does not wake sleepers on DestroyBody).
+        BodyInterface& bi = im.physics.GetBodyInterface();
+        for (const auto& [inst, ids] : im.bodies) {
+            (void)inst;
+            for (BodyID id : ids)
+                if (bi.GetMotionType(id) == EMotionType::Dynamic) bi.ActivateBody(id);
+        }
+    }
 }
 
 std::vector<Instance*> PhysicsWorld::parts_in_box(std::array<double, 3> center,
@@ -674,7 +841,9 @@ std::vector<std::pair<Instance*, Instance*>> PhysicsWorld::take_touch_end_events
     return out;
 }
 
-size_t PhysicsWorld::body_count() const { return impl_->bodies.size(); }
+size_t PhysicsWorld::body_count() const { return impl_->by_id.size(); }
+size_t PhysicsWorld::skipped_bodies() const { return impl_->skipped_bodies; }
+bool PhysicsWorld::body_limit_hit() const { return impl_->body_limit_hit; }
 
 std::vector<std::string> PhysicsWorld::take_events() { return take_events_at(0); }
 
@@ -1056,6 +1225,7 @@ void pose_character(PhysicsWorld::Impl& im, DataModel& model, PhysicsWorld::Impl
 }
 
 std::vector<Instance*> PhysicsWorld::step(double dt) {
+    sync_bodies();
     Impl& im = *impl_;
     std::vector<Instance*> moved;
     // --- character updates ---
@@ -1128,10 +1298,13 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
         BodyInterface& bi = im.physics.GetBodyInterfaceNoLock();
         std::set<std::pair<BodyID, BodyID>> now_touching;
         std::vector<std::pair<BodyID, AABox>> bounds;
-        for (const auto& [inst, id] : im.bodies) {
-            BodyLockRead lock(im.physics.GetBodyLockInterface(), id);
-            bounds.push_back({id, lock.GetBody().GetWorldSpaceBounds()});
+        for (const auto& [inst, ids] : im.bodies) {
             (void)inst;
+            for (BodyID id : ids) {
+                BodyLockRead lock(im.physics.GetBodyLockInterface(), id);
+                if (lock.GetBody().IsInBroadPhase())
+                    bounds.push_back({id, lock.GetBody().GetWorldSpaceBounds()});
+            }
         }
         for (size_t i = 0; i < bounds.size(); ++i) {
             bool dyn_i = bi.GetMotionType(bounds[i].first) == EMotionType::Dynamic;
@@ -1163,18 +1336,20 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
         im.touching = std::move(now_touching);
     }
     BodyInterface& bodies = im.physics.GetBodyInterfaceNoLock();
-    for (auto& [inst, id] : im.bodies) {
-        if (bodies.GetMotionType(id) == EMotionType::Static) continue;
-        Vec3 pos;
-        Quat rot;
-        bodies.GetPositionAndRotation(id, pos, rot);
-        Variant before = cframe_of(*inst);
-        double dx = pos.GetX() - before.position[0];
-        double dy = pos.GetY() - before.position[1];
-        double dz = pos.GetZ() - before.position[2];
-        if (dx * dx + dy * dy + dz * dz > 1e-8) {
-            write_cframe(model_, *inst, pos, rot);
-            moved.push_back(inst);
+    for (auto& [inst, ids] : im.bodies) {
+        for (BodyID id : ids) {
+            if (bodies.GetMotionType(id) == EMotionType::Static) continue;
+            Vec3 pos;
+            Quat rot;
+            bodies.GetPositionAndRotation(id, pos, rot);
+            Variant before = cframe_of(*inst);
+            double dx = pos.GetX() - before.position[0];
+            double dy = pos.GetY() - before.position[1];
+            double dz = pos.GetZ() - before.position[2];
+            if (dx * dx + dy * dy + dz * dz > 1e-8) {
+                write_cframe(model_, *inst, pos, rot);
+                moved.push_back(inst);
+            }
         }
     }
     return moved;

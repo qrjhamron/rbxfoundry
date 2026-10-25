@@ -43,6 +43,11 @@ public:
     // once after begin). `character_model` subtree is excluded (driven
     // by the character controller instead).
     void build_world();
+    // Gate A3: diff live DataModel against built bodies (create /
+    // recreate / destroy only what changed). Called by step().
+    void sync_bodies();
+    size_t skipped_bodies() const;
+    bool body_limit_hit() const;
     // Spawns (or respawns) the blocky character at the first
     // SpawnLocation, or a default spawn. rig: "R6" | "R15".
     Instance* spawn_character(const std::string& rig);

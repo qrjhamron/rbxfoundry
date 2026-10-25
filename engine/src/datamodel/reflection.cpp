@@ -60,6 +60,67 @@ Variant default_number_range(double lo, double hi) {
     return v;
 }
 
+
+Variant udim2(double xs, double xo, double ys, double yo) {
+    Variant v; v.type = ValueType::UDim2;
+    v.complex_value = Json::array();
+    v.complex_value.push(Json(xs)); v.complex_value.push(Json(xo));
+    v.complex_value.push(Json(ys)); v.complex_value.push(Json(yo));
+    return v;
+}
+Variant vec2(double x, double y) {
+    Variant v; v.type = ValueType::Vector2;
+    v.complex_value = Json::array();
+    v.complex_value.push(Json(x)); v.complex_value.push(Json(y));
+    return v;
+}
+Variant f32(double x) { Variant v = Variant::make_float64(x); v.type = ValueType::Float32; return v; }
+Variant i32(int64_t x) { Variant v = Variant::make_int64(x); v.type = ValueType::Int32; return v; }
+Variant content(const std::string& s) { Variant v; v.type = ValueType::ContentId; v.string_value = s; return v; }
+
+// GuiObject property set shared by Frame/Text*/Image*/ScrollingFrame
+// (Gate A2/27C). Types follow Roblox reflection; defaults are the
+// documented creation defaults for the covered properties only.
+std::map<std::string, PropertyInfo> gui_object_props() {
+    return {
+        {"Active", {ValueType::Bool, Variant::make_bool(false)}},
+        {"AnchorPoint", {ValueType::Vector2, vec2(0, 0)}},
+        {"AutomaticSize", {ValueType::Enum, Variant::make_enum(0)}},
+        {"BackgroundColor3", {ValueType::Color3, color(1, 1, 1)}},
+        {"BackgroundTransparency", {ValueType::Float32, f32(0)}},
+        {"BorderColor3", {ValueType::Color3, color(0, 0, 0)}},
+        {"BorderMode", {ValueType::Enum, Variant::make_enum(0)}},
+        {"BorderSizePixel", {ValueType::Int32, i32(1)}},
+        {"ClipsDescendants", {ValueType::Bool, Variant::make_bool(false)}},
+        {"LayoutOrder", {ValueType::Int32, i32(0)}},
+        {"Position", {ValueType::UDim2, udim2(0, 0, 0, 0)}},
+        {"Rotation", {ValueType::Float32, f32(0)}},
+        {"Size", {ValueType::UDim2, udim2(0, 0, 0, 0)}},
+        {"SizeConstraint", {ValueType::Enum, Variant::make_enum(0)}},
+        {"Visible", {ValueType::Bool, Variant::make_bool(true)}},
+        {"ZIndex", {ValueType::Int32, i32(1)}},
+        {"Selectable", {ValueType::Bool, Variant::make_bool(false)}},
+        {"SelectionOrder", {ValueType::Int32, i32(0)}},
+    };
+}
+std::map<std::string, PropertyInfo> text_props() {
+    auto props = gui_object_props();
+    props["Font"] = {ValueType::Enum, Variant::make_enum(3)};
+    props["Text"] = {ValueType::String, Variant::make_string("")};
+    props["TextColor3"] = {ValueType::Color3, color(0, 0, 0)};
+    props["TextSize"] = {ValueType::Float32, f32(14)};
+    props["TextTransparency"] = {ValueType::Float32, f32(0)};
+    props["TextStrokeColor3"] = {ValueType::Color3, color(0, 0, 0)};
+    props["TextStrokeTransparency"] = {ValueType::Float32, f32(1)};
+    props["TextWrapped"] = {ValueType::Bool, Variant::make_bool(false)};
+    props["TextScaled"] = {ValueType::Bool, Variant::make_bool(false)};
+    props["TextXAlignment"] = {ValueType::Enum, Variant::make_enum(1)};
+    props["TextYAlignment"] = {ValueType::Enum, Variant::make_enum(1)};
+    props["RichText"] = {ValueType::Bool, Variant::make_bool(false)};
+    props["LineHeight"] = {ValueType::Float32, f32(1)};
+    return props;
+}
+
 const std::map<std::string, std::map<std::string, PropertyInfo>>& reflection_table() {
     using V = ValueType;
     static const std::map<std::string, std::map<std::string, PropertyInfo>> table = {
@@ -359,6 +420,107 @@ const std::map<std::string, PropertyInfo>* reflection_for(const std::string& cla
             return merged;
         }();
         return &mesh_part;
+    }
+    // GUI classes (Gate A2/27C): typed defaults so Luau/CLI assignments
+    // are reflection-checked and serialize with correct types.
+    {
+        static const std::map<std::string, std::map<std::string, PropertyInfo>> gui = [] {
+            std::map<std::string, std::map<std::string, PropertyInfo>> m;
+            m["Frame"] = gui_object_props();
+            m["CanvasGroup"] = gui_object_props();
+            m["CanvasGroup"]["GroupColor3"] = {ValueType::Color3, color(1, 1, 1)};
+            m["CanvasGroup"]["GroupTransparency"] = {ValueType::Float32, f32(0)};
+            m["TextLabel"] = text_props();
+            m["TextButton"] = text_props();
+            m["TextButton"]["AutoButtonColor"] = {ValueType::Bool, Variant::make_bool(true)};
+            m["TextButton"]["Modal"] = {ValueType::Bool, Variant::make_bool(false)};
+            m["TextBox"] = text_props();
+            m["TextBox"]["PlaceholderText"] = {ValueType::String, Variant::make_string("")};
+            m["TextBox"]["PlaceholderColor3"] = {ValueType::Color3, color(0.7, 0.7, 0.7)};
+            m["TextBox"]["ClearTextOnFocus"] = {ValueType::Bool, Variant::make_bool(true)};
+            m["TextBox"]["TextEditable"] = {ValueType::Bool, Variant::make_bool(true)};
+            m["TextBox"]["MultiLine"] = {ValueType::Bool, Variant::make_bool(false)};
+            auto image = gui_object_props();
+            image["Image"] = {ValueType::ContentId, content("")};
+            image["ImageColor3"] = {ValueType::Color3, color(1, 1, 1)};
+            image["ImageTransparency"] = {ValueType::Float32, f32(0)};
+            image["ScaleType"] = {ValueType::Enum, Variant::make_enum(0)};
+            image["SliceScale"] = {ValueType::Float32, f32(1)};
+            m["ImageLabel"] = image;
+            m["ImageButton"] = image;
+            m["ImageButton"]["AutoButtonColor"] = {ValueType::Bool, Variant::make_bool(true)};
+            auto scroll = gui_object_props();
+            scroll["CanvasPosition"] = {ValueType::Vector2, vec2(0, 0)};
+            scroll["ScrollingEnabled"] = {ValueType::Bool, Variant::make_bool(true)};
+            scroll["ScrollBarThickness"] = {ValueType::Int32, i32(12)};
+            m["ScrollingFrame"] = scroll;
+            m["ScreenGui"] = {
+                {"DisplayOrder", {ValueType::Int32, i32(0)}},
+                {"Enabled", {ValueType::Bool, Variant::make_bool(true)}},
+                {"IgnoreGuiInset", {ValueType::Bool, Variant::make_bool(false)}},
+                {"ResetOnSpawn", {ValueType::Bool, Variant::make_bool(true)}},
+                {"ZIndexBehavior", {ValueType::Enum, Variant::make_enum(0)}},
+            };
+            m["SurfaceGui"] = {
+                {"Adornee", {ValueType::Ref, [] { Variant v; v.type = ValueType::Ref; return v; }()}},
+                {"AlwaysOnTop", {ValueType::Bool, Variant::make_bool(false)}},
+                {"Enabled", {ValueType::Bool, Variant::make_bool(true)}},
+                {"Face", {ValueType::Enum, Variant::make_enum(5)}},
+                {"LightInfluence", {ValueType::Float32, f32(1)}},
+                {"ZIndexBehavior", {ValueType::Enum, Variant::make_enum(0)}},
+            };
+            m["BillboardGui"] = m["SurfaceGui"];
+            m["UIStroke"] = {
+                {"Color", {ValueType::Color3, color(0, 0, 0)}},
+                {"Thickness", {ValueType::Float32, f32(1)}},
+                {"Transparency", {ValueType::Float32, f32(0)}},
+                {"Enabled", {ValueType::Bool, Variant::make_bool(true)}},
+                {"ApplyStrokeMode", {ValueType::Enum, Variant::make_enum(0)}},
+                {"LineJoinMode", {ValueType::Enum, Variant::make_enum(0)}},
+            };
+            m["UICorner"] = {{"CornerRadius", {ValueType::UDim, [] { Variant v; v.type = ValueType::UDim; v.complex_value = Json::array(); v.complex_value.push(Json(0.0)); v.complex_value.push(Json(8.0)); return v; }()}}};
+            m["UIPadding"] = {
+                {"PaddingLeft", {ValueType::UDim, m["UICorner"]["CornerRadius"].default_value}},
+                {"PaddingRight", {ValueType::UDim, m["UICorner"]["CornerRadius"].default_value}},
+                {"PaddingTop", {ValueType::UDim, m["UICorner"]["CornerRadius"].default_value}},
+                {"PaddingBottom", {ValueType::UDim, m["UICorner"]["CornerRadius"].default_value}},
+            };
+            // Normalise padding defaults to zero offset (UDim 0,0).
+            for (auto& [k, v] : m["UIPadding"]) { (void)k; v.default_value.complex_value = Json::array(); v.default_value.complex_value.push(Json(0.0)); v.default_value.complex_value.push(Json(0.0)); }
+            m["UIScale"] = {{"Scale", {ValueType::Float64, Variant::make_float64(1)}}};
+            m["UIAspectRatioConstraint"] = {
+                {"AspectRatio", {ValueType::Float64, Variant::make_float64(1)}},
+                {"AspectType", {ValueType::Enum, Variant::make_enum(0)}},
+                {"DominantAxis", {ValueType::Enum, Variant::make_enum(0)}},
+            };
+            m["UISizeConstraint"] = {
+                {"MaxSize", {ValueType::Vector2, vec2(1e9, 1e9)}},
+                {"MinSize", {ValueType::Vector2, vec2(0, 0)}},
+            };
+            m["UITextSizeConstraint"] = {
+                {"MaxTextSize", {ValueType::Int32, i32(100)}},
+                {"MinTextSize", {ValueType::Int32, i32(1)}},
+            };
+            m["UIListLayout"] = {
+                {"FillDirection", {ValueType::Enum, Variant::make_enum(0)}},
+                {"HorizontalAlignment", {ValueType::Enum, Variant::make_enum(0)}},
+                {"VerticalAlignment", {ValueType::Enum, Variant::make_enum(0)}},
+                {"SortOrder", {ValueType::Enum, Variant::make_enum(1)}},
+                {"Wraps", {ValueType::Bool, Variant::make_bool(false)}},
+            };
+            m["UIGridLayout"] = m["UIListLayout"];
+            m["UIPageLayout"] = m["UIListLayout"];
+            m["UIGradient"] = {
+                {"Color", {ValueType::ColorSequence, default_color_sequence()}},
+                {"Offset", {ValueType::Vector2, vec2(0, 0)}},
+                {"Rotation", {ValueType::Float32, f32(0)}},
+                {"Transparency", {ValueType::NumberSequence, default_number_sequence(0)}},
+                {"Enabled", {ValueType::Bool, Variant::make_bool(true)}},
+            };
+            return m;
+        }();
+        auto git = gui.find(class_name);
+        if (git != gui.end()) return &git->second;
     }
     return part_like(class_name);
 }

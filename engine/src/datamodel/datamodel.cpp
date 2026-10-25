@@ -139,22 +139,42 @@ bool DataModel::set_property(Instance& inst, const std::string& property, const 
     if (const auto* props = reflection_for(inst.class_name)) {
         auto it = props->find(property);
         if (it != props->end() && it->second.type != value.type) {
-            // Allow numeric widening between Int32/Int64 and Float32/Float64 pairs.
-            bool int_pair = (it->second.type == ValueType::Int32 || it->second.type == ValueType::Int64) &&
-                            (value.type == ValueType::Int32 || value.type == ValueType::Int64);
-            bool float_pair = (it->second.type == ValueType::Float32 || it->second.type == ValueType::Float64) &&
-                              (value.type == ValueType::Float32 || value.type == ValueType::Float64);
-            if (!int_pair && !float_pair) {
-                error = "property '" + property + "' on " + inst.class_name + " expects " +
-                        value_type_name(it->second.type) + ", got " + value_type_name(value.type);
-                return false;
+            // Reflection-driven numeric conversion (Gate A2): Lua numbers
+            // arrive as Float64 and CLI values may be Int64; convert the
+            // payload to the reflection type (never just retag, which
+            // would lose the value). Non-integral numbers assigned to
+            // integer properties are rejected, as in Roblox.
+            auto is_int = [](ValueType v) { return v == ValueType::Int32 || v == ValueType::Int64; };
+            auto is_float = [](ValueType v) { return v == ValueType::Float32 || v == ValueType::Float64; };
+            ValueType expected = it->second.type;
+            if ((is_int(expected) || is_float(expected)) && (is_int(value.type) || is_float(value.type))) {
+                double dv = is_int(value.type) ? static_cast<double>(value.int_value) : value.float_value;
+                Variant coerced;
+                if (is_int(expected)) {
+                    if (dv != std::floor(dv) || dv < -9.0e15 || dv > 9.0e15) {
+                        error = "property '" + property + "' on " + inst.class_name + " expects " +
+                                value_type_name(expected) + ", got a non-integral number";
+                        return false;
+                    }
+                    coerced = Variant::make_int64(static_cast<int64_t>(dv));
+                } else {
+                    coerced = Variant::make_float64(dv);
+                }
+                coerced.type = expected;
+                inst.properties[property] = coerced;
+                sync_color_brick(inst, property);
+                return true;
             }
-            Variant coerced = value;
-            coerced.type = it->second.type;
-            inst.properties[property] = coerced;
-            if (property == "CFrame") detail::sync_position_from_cframe(inst);
-            sync_color_brick(inst, property);
-            return true;
+            if (expected == ValueType::Enum && value.type == ValueType::EnumItem &&
+                value.complex_value.is_object()) {
+                Variant coerced = Variant::make_enum(
+                    static_cast<int64_t>(value.complex_value.find("value") ? value.complex_value.find("value")->as_double() : 0));
+                inst.properties[property] = coerced;
+                return true;
+            }
+            error = "property '" + property + "' on " + inst.class_name + " expects " +
+                    value_type_name(it->second.type) + ", got " + value_type_name(value.type);
+            return false;
         }
     }
     inst.properties[property] = value;
