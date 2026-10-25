@@ -82,6 +82,14 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                         args.push(std::move(tag));
                         runtime_->fire_signal_json(touched, "Touched", args.dump());
                     }
+                    for (auto& [touched, other] : physics_->take_touch_end_events()) {
+                        Json args = Json::array();
+                        Json tag = Json::object();
+                        tag.set("$t", Json("Instance"));
+                        tag.set("p", Json(runtime_model_.path_of(*other)));
+                        args.push(std::move(tag));
+                        runtime_->fire_signal_json(touched, "TouchEnded", args.dump());
+                    }
                     for (const std::string& event : physics_->take_events()) {
                         events.push(Json(event));
                         if (event == "died" && physics_->humanoid())
@@ -197,6 +205,14 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                         tag.set("p", Json(runtime_model_.path_of(*other)));
                         args.push(std::move(tag));
                         runtime_->fire_signal_json(touched, "Touched", args.dump());
+                    }
+                    for (auto& [touched, other] : physics_->take_touch_end_events()) {
+                        Json args = Json::array();
+                        Json tag = Json::object();
+                        tag.set("$t", Json("Instance"));
+                        tag.set("p", Json(runtime_model_.path_of(*other)));
+                        args.push(std::move(tag));
+                        runtime_->fire_signal_json(touched, "TouchEnded", args.dump());
                     }
                 }
                 Json result = Json::object();

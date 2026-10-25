@@ -83,6 +83,8 @@ public:
     std::vector<Instance*> parts_in_radius(std::array<double, 3> center, double radius) const;
     // Touch begin events since the last call: (touched part, other part).
     std::vector<std::pair<Instance*, Instance*>> take_touch_events();
+    // TouchEnded pairs since the last call (Phase 27.3).
+    std::vector<std::pair<Instance*, Instance*>> take_touch_end_events();
     double time() const { return time_; }
     size_t body_count() const;
     // Gameplay events since the last call ("died", "respawned").

@@ -1321,12 +1321,49 @@ int conn_disconnect(lua_State* L) {
 // ------------------------------------------------------------------- tweens --
 
 double apply_easing(const std::string& style, double t) {
-    if (style == "Sine") return 0.5 - 0.5 * std::cos(3.14159265358979 * t);
+    return apply_easing_dir(style, "In", t);
+}
+
+// Documented Roblox EasingStyle/EasingDirection mathematics (the same
+// curves published for TweenInfo). Direction is applied around the In
+// curve: Out(t) = 1 - In(1-t); InOut splices In/Out at t=0.5.
+double easing_in(const std::string& style, double t) {
+    constexpr double kPi = 3.14159265358979;
+    if (style == "Linear") return t;
+    if (style == "Sine") return 1.0 - std::cos(t * kPi / 2.0);
     if (style == "Quad") return t * t;
     if (style == "Cubic") return t * t * t;
     if (style == "Quart") { double t2 = t * t; return t2 * t2; }
-    if (style == "Back") { const double c = 1.70158; return (c + 1) * t * t * t - c * t * t; }
-    return t; // Linear and everything else (documented approximation)
+    if (style == "Quint") { double t2 = t * t; return t2 * t2 * t; }
+    if (style == "Exponential") return t <= 0.0 ? 0.0 : std::pow(2.0, 10.0 * t - 10.0);
+    if (style == "Circular") return 1.0 - std::sqrt(std::max(0.0, 1.0 - t * t));
+    if (style == "Back") { const double c = 1.70158; return (c + 1.0) * t * t * t - c * t * t; }
+    if (style == "Bounce") {
+        // Bounce is conventionally authored as Out; use its mirror for In.
+        auto out = [](double x) {
+            const double n1 = 7.5625, d1 = 2.75;
+            if (x < 1.0 / d1) return n1 * x * x;
+            if (x < 2.0 / d1) { x -= 1.5 / d1; return n1 * x * x + 0.75; }
+            if (x < 2.5 / d1) { x -= 2.25 / d1; return n1 * x * x + 0.9375; }
+            x -= 2.625 / d1; return n1 * x * x + 0.984375;
+        };
+        return 1.0 - out(1.0 - t);
+    }
+    if (style == "Elastic") {
+        if (t <= 0.0 || t >= 1.0) return t;
+        const double c = 2.0 * kPi / 3.0;
+        return -std::pow(2.0, 10.0 * t - 10.0) * std::sin((t * 10.0 - 10.75) * c);
+    }
+    return t;
+}
+double apply_easing_dir(const std::string& style, const std::string& direction, double t) {
+    t = std::max(0.0, std::min(1.0, t));
+    if (style == "Linear") return t;
+    if (direction == "Out") return 1.0 - easing_in(style, 1.0 - t);
+    if (direction == "InOut")
+        return t < 0.5 ? easing_in(style, 2.0 * t) / 2.0
+                       : 1.0 - easing_in(style, 2.0 - 2.0 * t) / 2.0;
+    return easing_in(style, t); // In (and unspecified)
 }
 
 Variant interpolate_variant(const Variant& from, const Variant& to, double a) {
@@ -1341,11 +1378,14 @@ Variant interpolate_variant(const Variant& from, const Variant& to, double a) {
         case ValueType::Vector3: case ValueType::Color3:
             for (int i = 0; i < 3; ++i) out.vec3[i] = lerp(from.vec3[i], to.vec3[i], a);
             break;
-        case ValueType::Vector2: {
-            if (from.complex_value.is_array() && to.complex_value.is_array()) {
-                out.complex_value = json_arr({
-                    Json(lerp(from.complex_value.as_array()[0].as_double(), to.complex_value.as_array()[0].as_double(), a)),
-                    Json(lerp(from.complex_value.as_array()[1].as_double(), to.complex_value.as_array()[1].as_double(), a))});
+        case ValueType::Vector2: case ValueType::UDim: case ValueType::UDim2: {
+            if (from.complex_value.is_array() && to.complex_value.is_array() &&
+                from.complex_value.as_array().size() == to.complex_value.as_array().size()) {
+                Json arr = Json::array();
+                for (size_t i = 0; i < to.complex_value.as_array().size(); ++i)
+                    arr.push(Json(lerp(from.complex_value.as_array()[i].as_double(),
+                                       to.complex_value.as_array()[i].as_double(), a)));
+                out.complex_value = std::move(arr);
             }
             break;
         }
@@ -1357,6 +1397,29 @@ Variant interpolate_variant(const Variant& from, const Variant& to, double a) {
     return out;
 }
 
+int fn_tween_info_new(lua_State* L) {
+    // TweenInfo.new(time, easingStyle, easingDirection, repeatCount,
+    // reverses, delayTime) -> plain table consumed by TweenService:Create.
+    double opt_time = luaL_optnumber(L, 1, 1.0);
+    double opt_repeat = luaL_optnumber(L, 4, 0);
+    bool opt_reverses = lua_toboolean(L, 5) != 0;
+    double opt_delay = luaL_optnumber(L, 6, 0.0);
+    lua_newtable(L);
+    lua_pushnumber(L, opt_time); lua_setfield(L, -2, "Time");
+    if (!lua_isnoneornil(L, 2)) { lua_pushvalue(L, 2); } else {
+        push_enum_item(L, "EasingStyle", "Quad", 0);
+    }
+    lua_setfield(L, -2, "EasingStyle");
+    if (!lua_isnoneornil(L, 3)) { lua_pushvalue(L, 3); } else {
+        push_enum_item(L, "EasingDirection", "Out", 0);
+    }
+    lua_setfield(L, -2, "EasingDirection");
+    lua_pushinteger(L, static_cast<lua_Integer>(opt_repeat)); lua_setfield(L, -2, "RepeatCount");
+    lua_pushboolean(L, opt_reverses); lua_setfield(L, -2, "Reverses");
+    lua_pushnumber(L, opt_delay); lua_setfield(L, -2, "DelayTime");
+    return 1;
+}
+
 int tween_play(lua_State* L) {
     auto* u = check_box(L, 1, UKind::Tween, "Tween");
     auto* tween = static_cast<TweenState*>(u->extra);
@@ -1366,12 +1429,18 @@ int tween_play(lua_State* L) {
         tween->starts.push_back({prop, it != tween->inst->properties.end() ? it->second : goal});
     }
     tween->elapsed = 0;
+    tween->cycle = 0;
+    tween->forward = true;
+    tween->delay_elapsed = 0;
+    tween->state = tween->delay_time > 0 ? 1 : 2;
     tween->playing = true;
     return 0;
 }
 int tween_pause(lua_State* L) {
     auto* u = check_box(L, 1, UKind::Tween, "Tween");
-    static_cast<TweenState*>(u->extra)->playing = false;
+    auto* tween = static_cast<TweenState*>(u->extra);
+    tween->playing = false;
+    if (tween->state == 1 || tween->state == 2) tween->state = 3;
     return 0;
 }
 int tween_cancel(lua_State* L) {
@@ -1379,6 +1448,7 @@ int tween_cancel(lua_State* L) {
     auto* u = check_box(L, 1, UKind::Tween, "Tween");
     auto* tween = static_cast<TweenState*>(u->extra);
     tween->playing = false;
+    tween->state = 5;
     if (tween->completed) fire_signal(rt, L, tween->completed, {arg_string("Cancelled")});
     return 0;
 }
@@ -1389,7 +1459,8 @@ int tween_index(lua_State* L) {
     std::string key = luaL_checkstring(L, 2);
     if (key == "Completed") { push_signal(L, tween->completed); return 1; }
     if (key == "PlaybackState") {
-        lua_pushstring(L, tween->playing ? "Playing" : "Paused");
+        static const char* kNames[] = {"Begin", "Delayed", "Playing", "Paused", "Completed", "Cancelled"};
+        lua_pushstring(L, kNames[std::max(0, std::min(5, tween->state))]);
         return 1;
     }
     lua_getfield(L, LUA_REGISTRYINDEX, "blox_tween_methods");
@@ -1407,19 +1478,38 @@ int m_tween_create(lua_State* L) {
     Instance* target = check_instance(L, 2);
     check_alive(rt, target);
     double duration = 1.0;
-    std::string easing = "Linear";
+    std::string easing = "Quad", direction = "Out";
+    int repeat_count = 0; bool reverses = false; double delay_time = 0.0;
     if (lua_istable(L, 3)) {
         lua_getfield(L, 3, "Time");
         if (lua_isnumber(L, -1)) duration = lua_tonumber(L, -1);
         lua_pop(L, 1);
-        lua_getfield(L, 3, "EasingStyle");
-        if (lua_isuserdata(L, -1)) easing = static_cast<UData*>(lua_touserdata(L, -1))->s2;
-        else if (lua_isstring(L, -1)) easing = lua_tostring(L, -1);
+        auto enum_field = [&](const char* name, std::string& out) {
+            lua_getfield(L, 3, name);
+            if (lua_isuserdata(L, -1)) out = static_cast<UData*>(lua_touserdata(L, -1))->s2;
+            else if (lua_isstring(L, -1)) out = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        };
+        enum_field("EasingStyle", easing);
+        enum_field("EasingDirection", direction);
+        lua_getfield(L, 3, "RepeatCount");
+        if (lua_isnumber(L, -1)) repeat_count = static_cast<int>(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "Reverses");
+        if (lua_isboolean(L, -1)) reverses = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "DelayTime");
+        if (lua_isnumber(L, -1)) delay_time = lua_tonumber(L, -1);
         lua_pop(L, 1);
     }
     auto tween = std::make_unique<TweenState>();
     tween->inst = target;
     tween->duration = std::max(duration, 0.0);
+    tween->easing_style = easing;
+    tween->easing_direction = direction;
+    tween->repeat_count = repeat_count;
+    tween->reverses = reverses;
+    tween->delay_time = std::max(delay_time, 0.0);
     tween->completed = rt->impl_->new_signal(rt);
     if (lua_istable(L, 4)) {
         lua_pushnil(L);
@@ -1437,7 +1527,6 @@ int m_tween_create(lua_State* L) {
             lua_pop(L, 1);
         }
     }
-    (void)easing; // stored below via s1 on the userdata is not needed; keep in TweenState:
     TweenState* raw = tween.get();
     rt->impl_->tweens.push_back(std::move(tween));
     UData* u = new_box(L, UKind::Tween, "BloxTween");

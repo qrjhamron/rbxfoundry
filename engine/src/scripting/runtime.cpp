@@ -573,6 +573,10 @@ void register_bindings(lua_State* L, Runtime* rt) {
     set_method(L, "blox_methods", "InvokeClient", m_remote_invoke_client);
 
     lua_newtable(L);
+    lua_pushcfunction(L, fn_tween_info_new, "new"); lua_setfield(L, -2, "new");
+    lua_setglobal(L, "TweenInfo");
+
+    lua_newtable(L);
     lua_pushcfunction(L, task_wait, "wait"); lua_setfield(L, -2, "wait");
     lua_pushcfunction(L, task_spawn, "spawn"); lua_setfield(L, -2, "spawn");
     lua_pushcfunction(L, task_defer, "defer"); lua_setfield(L, -2, "defer");
@@ -1253,24 +1257,40 @@ void Runtime::step(double dt) {
     time_ += dt;
     fire_service_signal(this, "RunService", "Stepped", dt);
     process_threads(this);
-    // Advance tweens.
+    // Advance tweens on scheduler time (Phase 27B): delay, then cycles
+    // of duration with easing; Reverses alternates direction per cycle,
+    // RepeatCount counts additional cycles (-1 repeats forever).
     for (auto& tween : impl_->tweens) {
         if (!tween->playing) continue;
+        if (tween->state == 1) { // Delayed
+            tween->delay_elapsed += dt;
+            if (tween->delay_elapsed < tween->delay_time) continue;
+            tween->state = 2;
+        }
         tween->elapsed += dt;
-        double alpha = tween->duration > 0 ? std::min(1.0, tween->elapsed / tween->duration) : 1.0;
-        double eased = apply_easing(tween->goals.empty() ? "Linear" : "Linear", alpha);
-        (void)eased;
+        double raw = tween->duration > 0 ? tween->elapsed / tween->duration : 1.0;
+        bool cycle_done = raw >= 1.0;
+        double alpha = cycle_done ? 1.0 : raw;
+        double directed = tween->forward ? alpha : 1.0 - alpha;
+        double eased = apply_easing_dir(tween->easing_style, tween->easing_direction, directed);
         for (size_t i = 0; i < tween->goals.size(); ++i) {
             const auto& [prop, goal] = tween->goals[i];
-            Variant value = interpolate_variant(tween->starts[i].second, goal,
-                                                apply_easing("Linear", alpha));
+            Variant value = interpolate_variant(tween->starts[i].second, goal, eased);
             std::string error;
             if (model_.set_property(*tween->inst, prop, value, error))
                 fire_changed(this, L_, tween->inst, prop);
         }
-        if (alpha >= 1.0) {
-            tween->playing = false;
-            fire_signal(this, L_, tween->completed, {arg_string("Completed")});
+        if (cycle_done) {
+            bool more = tween->repeat_count < 0 || tween->cycle < tween->repeat_count;
+            if (more) {
+                tween->cycle += 1;
+                tween->elapsed = 0;
+                if (tween->reverses) tween->forward = !tween->forward;
+            } else {
+                tween->playing = false;
+                tween->state = 4;
+                fire_signal(this, L_, tween->completed, {arg_string("Completed")});
+            }
         }
     }
     evaluate_anim_tracks(this, dt);

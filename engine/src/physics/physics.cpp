@@ -133,6 +133,31 @@ Quat quat_from_cframe(const Variant& cf) {
     return m.GetQuaternion();
 }
 
+// PhysicalProperties (Phase 27.1): CustomPhysicalProperties when set
+// (array [density, friction, elasticity, frictionWeight,
+// elasticityWeight, acoustic] or object form), otherwise documented
+// defaults. Weights are stored in the value but pair-combination is
+// Jolt's contact combining; see docs/PHASE27_PHYSICS.md.
+struct PhysProps { double density = 1.0; double friction = 0.5; double elasticity = 0.0; };
+PhysProps physical_props(const Instance& inst) {
+    PhysProps out;
+    const Variant* phys = prop(inst, "CustomPhysicalProperties");
+    if (!phys) return out;
+    if (phys->complex_value.is_array() && phys->complex_value.as_array().size() >= 3) {
+        out.density = phys->complex_value.as_array()[0].as_double(out.density);
+        out.friction = phys->complex_value.as_array()[1].as_double(out.friction);
+        out.elasticity = phys->complex_value.as_array()[2].as_double(out.elasticity);
+    } else if (phys->complex_value.is_object()) {
+        if (const Json* d = phys->complex_value.find("density")) out.density = d->as_double(out.density);
+        if (const Json* d = phys->complex_value.find("friction")) out.friction = d->as_double(out.friction);
+        if (const Json* d = phys->complex_value.find("elasticity")) out.elasticity = d->as_double(out.elasticity);
+    }
+    out.density = std::max(0.01, out.density);
+    out.friction = std::max(0.0, out.friction);
+    out.elasticity = std::max(0.0, std::min(1.0, out.elasticity));
+    return out;
+}
+
 void write_cframe(DataModel& model, Instance& inst, Vec3Arg pos, QuatArg rot) {
     Mat44 m = Mat44::sRotation(rot);
     Vec3 c0 = m.GetColumn3(0), c1 = m.GetColumn3(1), c2 = m.GetColumn3(2);
@@ -271,6 +296,7 @@ struct PhysicsWorld::Impl {
     std::map<std::string, uint32> group_ids;
     std::set<std::pair<BodyID, BodyID>> touching;
     std::vector<std::pair<Instance*, Instance*>> touch_events;
+    std::vector<std::pair<Instance*, Instance*>> touch_end_events;
 
     Impl() {
         init_jolt_once(); // Factory + RegisterTypes must precede Init
@@ -568,24 +594,31 @@ void PhysicsWorld::build_world() {
             settings.mMotionQuality = EMotionQuality::LinearCast;
             // Mass from volume * density (Roblox-like): honour
             // CustomPhysicalProperties density when present.
-            double density = 1.0;
-            if (const Variant* phys = prop(*inst, "CustomPhysicalProperties")) {
-                if (phys->complex_value.is_object()) {
-                    if (const Json* d = phys->complex_value.find("density")) density = d->as_double(density);
-                }
-            }
+            PhysProps phys = physical_props(*inst);
             double volume = std::max(0.001, size[0] * size[1] * size[2]);
             settings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-            settings.mMassPropertiesOverride.mMass = static_cast<float>(std::max(0.05, volume * density));
-            settings.mFriction = 0.5f;
-            settings.mRestitution = 0.0f;
+            settings.mMassPropertiesOverride.mMass = static_cast<float>(std::max(0.05, volume * phys.density));
+            settings.mFriction = static_cast<float>(phys.friction);
+            settings.mRestitution = static_cast<float>(phys.elasticity);
         } else {
-            settings.mFriction = 0.5f;
+            PhysProps phys = physical_props(*inst);
+            settings.mFriction = static_cast<float>(phys.friction);
+            settings.mRestitution = static_cast<float>(phys.elasticity);
         }
         BodyID id = bodies.CreateAndAddBody(settings, EActivation::Activate);
         if (!id.IsInvalid()) {
             impl_->bodies[inst] = id;
             impl_->by_id[id] = inst;
+            if (!anchored) {
+                if (const Variant* v = prop(*inst, "AssemblyLinearVelocity")) {
+                    if (v->type == ValueType::Vector3)
+                        bodies.SetLinearVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+                }
+                if (const Variant* v = prop(*inst, "AssemblyAngularVelocity")) {
+                    if (v->type == ValueType::Vector3)
+                        bodies.SetAngularVelocity(id, Vec3(static_cast<float>(v->vec3[0]), static_cast<float>(v->vec3[1]), static_cast<float>(v->vec3[2])));
+                }
+            }
         }
     }
     build_constraints(model_, *impl_);
@@ -633,6 +666,11 @@ std::vector<Instance*> PhysicsWorld::parts_in_radius(std::array<double, 3> cente
 std::vector<std::pair<Instance*, Instance*>> PhysicsWorld::take_touch_events() {
     auto out = std::move(impl_->touch_events);
     impl_->touch_events.clear();
+    return out;
+}
+std::vector<std::pair<Instance*, Instance*>> PhysicsWorld::take_touch_end_events() {
+    auto out = std::move(impl_->touch_end_events);
+    impl_->touch_end_events.clear();
     return out;
 }
 
@@ -1103,15 +1141,24 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
                 if (!bounds[i].second.Overlaps(bounds[j].second)) continue;
                 auto key = std::minmax(bounds[i].first, bounds[j].first);
                 now_touching.insert(key);
+                Instance* a = im.by_id[bounds[i].first];
+                Instance* b = im.by_id[bounds[j].first];
+                bool can_touch = prop_bool(*a, "CanTouch", true) && prop_bool(*b, "CanTouch", true);
+                if (!can_touch) { now_touching.erase(key); continue; }
                 if (!im.touching.contains(key)) {
-                    Instance* a = im.by_id[bounds[i].first];
-                    Instance* b = im.by_id[bounds[j].first];
-                    // Exclude two parts of the same character rig (they
-                    // have no bodies, so this is just belt-and-braces).
                     im.touch_events.push_back({a, b});
                     im.touch_events.push_back({b, a});
                 }
             }
+        }
+        for (const auto& key : im.touching) {
+            if (now_touching.contains(key)) continue;
+            Instance* a = im.by_id[key.first];
+            Instance* b = im.by_id[key.second];
+            if (!a || !b) continue;
+            if (!prop_bool(*a, "CanTouch", true) || !prop_bool(*b, "CanTouch", true)) continue;
+            im.touch_end_events.push_back({a, b});
+            im.touch_end_events.push_back({b, a});
         }
         im.touching = std::move(now_touching);
     }

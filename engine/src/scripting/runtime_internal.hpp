@@ -89,10 +89,21 @@ struct TweenState {
     Instance* inst = nullptr;
     std::vector<std::pair<std::string, Variant>> goals;
     std::vector<std::pair<std::string, Variant>> starts;
-    double duration = 0.0;
+    double duration = 1.0;
     double elapsed = 0.0;
     bool playing = false;
     SignalImpl* completed = nullptr;
+    // TweenInfo (Phase 27B).
+    std::string easing_style = "Quad";
+    std::string easing_direction = "Out";
+    int repeat_count = 0; // -1 = repeat forever
+    bool reverses = false;
+    double delay_time = 0.0;
+    double delay_elapsed = 0.0;
+    int cycle = 0;
+    bool forward = true;
+    // 0 Begin, 1 Delayed, 2 Playing, 3 Paused, 4 Completed, 5 Cancelled
+    int state = 0;
 };
 
 
@@ -355,6 +366,8 @@ int m_terrain_clear(lua_State* L);
 int m_terrain_read_voxels(lua_State* L);
 int m_text_service_get_text_size(lua_State* L);
 int fn_typeof(lua_State* L);
+int fn_tween_info_new(lua_State* L);
+double apply_easing_dir(const std::string& style, const std::string& direction, double t);
 void log_args(lua_State* L, const char* level);
 int fn_print(lua_State* L);
 int fn_warn(lua_State* L);
