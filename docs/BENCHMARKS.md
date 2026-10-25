@@ -40,3 +40,22 @@ FreeType faces on every call, and layout calls it per word per
 wrap/TextScaled iteration. The caches are process-lifetime
 (font chains) and per-render (glyph atlas entries); output is
 unchanged (phase16/phase22/visual suites re-verified).
+
+## Architecture refactor (post-refactor, same host)
+
+Measured with `scripts/bench.sh` after the modularization refactor
+(domain libraries, IPC handlers, Rust cli/app/commands split). Two
+consecutive runs; render varies with Lavapipe load, all other
+operations match the pre-refactor baseline in ARCHITECTURE_AUDIT.md.
+
+| Operation | Before | After (run A) | After (run B) |
+| --- | ---: | ---: | ---: |
+| render 800x600 (200 parts) | 0.42 s | 0.91 s | 0.42 s |
+| ui render 1920x1080 | 0.41 s | 0.41 s | 0.42 s |
+| export rbxl -> rbxlx | 0.41 s | 0.44 s | 0.48 s |
+| validate | 0.17 s | 0.18 s | 0.18 s |
+| tree (213 instances) | 0.21 s | 0.24 s | 0.32 s |
+| play step x240 (physics) | 0.16 s | 0.14 s | 0.14 s |
+
+Conclusion: no meaningful performance regression; end-to-end timings
+are dominated by process startup (~0.15 s) as before.
