@@ -32,7 +32,7 @@
     },
     {
       "area": "visual",
-      "evidence": "293 ms/frame on this machine (software Vulkan); no Studio baseline",
+      "evidence": "305 ms/frame on this machine (software Vulkan); no Studio baseline",
       "id": "perf.render_800x600",
       "status": "PARTIAL"
     },
@@ -46,6 +46,54 @@
       "area": "physics",
       "evidence": "character grounded; R6 Motor6D rig + Animator in character model",
       "id": "physics.character_and_rig",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "empty/baseplate/classic-baseplate registry + place info; Studio dimensions UNTESTED (no golden fixture)",
+      "id": "data.templates",
+      "status": "PARTIAL"
+    },
+    {
+      "area": "data",
+      "evidence": "single-root .rbxm export/inspect; .rbxm->place import + guard coverage in tests/phase17.rs",
+      "id": "data.model_files",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "save/export blocked on dangling refs + corrupt BTR1 terrain; unresolved assets warn and are preserved (tests/phase17.rs)",
+      "id": "data.export_integrity_guard",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "RichText <b>/<i>/<u>/<font color>/<br> styled runs pixel-tested (tests/phase16.rs)",
+      "id": "visual.rich_text",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "ImageLabel ScaleType=Slice nine-quads from SliceCenter x SliceScale, corners unscaled (tests/phase16.rs)",
+      "id": "visual.nine_slice",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "ContextActionService BindAction fires from play input (tests/phase14.rs)",
+      "id": "runtime.context_action_service",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "PathfindingService grid A* routes around obstacles; no navmesh (tests/phase14.rs)",
+      "id": "runtime.pathfinding",
+      "status": "PARTIAL"
+    },
+    {
+      "area": "physics",
+      "evidence": "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)",
+      "id": "physics.collision_groups",
       "status": "VERIFIED"
     },
     {
@@ -77,10 +125,10 @@
   "note": "VERIFIED means an internal automated check passes. No Roblox Studio reference data was available; nothing here is a Studio comparison.",
   "suite": "bloxcli-compatibility",
   "summary": {
-    "partial": 1,
-    "total": 12,
+    "partial": 3,
+    "total": 20,
     "unsupported": 3,
     "untested": 1,
-    "verified": 7
+    "verified": 13
   }
 }

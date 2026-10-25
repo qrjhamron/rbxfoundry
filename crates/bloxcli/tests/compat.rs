@@ -216,6 +216,37 @@ fn compatibility_suite() {
     record("physics.character_and_rig", "physics", "VERIFIED",
            "character grounded; R6 Motor6D rig + Animator in character model".into());
 
+    // ---- phases 13-17 ---------------------------------------------------
+    let templated = dir.join("templated.rbxl");
+    cli_ok(&["new", templated.to_str().unwrap(), "--template", "baseplate"]);
+    let info = cli_json(&["place", "info", templated.to_str().unwrap()]);
+    assert_eq!(info["info"]["metadata"]["placeId"], 0, "offline places never invent PlaceIds: {info}");
+    record("data.templates", "data", "PARTIAL",
+           "empty/baseplate/classic-baseplate registry + place info; Studio dimensions UNTESTED (no golden fixture)".into());
+
+    let model_file = dir.join("house.rbxm");
+    let model_export = cli_json(&[
+        "model", "export", &f, "--target", "Workspace/House", "--output", model_file.to_str().unwrap(),
+    ]);
+    assert_eq!(model_export["rootClass"], "Model", "{model_export}");
+    let model_inspect = cli_json(&["model", "inspect", model_file.to_str().unwrap()]);
+    assert_eq!(model_inspect["name"], "House");
+    record("data.model_files", "data", "VERIFIED",
+           "single-root .rbxm export/inspect; .rbxm->place import + guard coverage in tests/phase17.rs".into());
+
+    record("data.export_integrity_guard", "data", "VERIFIED",
+           "save/export blocked on dangling refs + corrupt BTR1 terrain; unresolved assets warn and are preserved (tests/phase17.rs)".into());
+    record("visual.rich_text", "visual", "VERIFIED",
+           "RichText <b>/<i>/<u>/<font color>/<br> styled runs pixel-tested (tests/phase16.rs)".into());
+    record("visual.nine_slice", "visual", "VERIFIED",
+           "ImageLabel ScaleType=Slice nine-quads from SliceCenter x SliceScale, corners unscaled (tests/phase16.rs)".into());
+    record("runtime.context_action_service", "runtime", "VERIFIED",
+           "ContextActionService BindAction fires from play input (tests/phase14.rs)".into());
+    record("runtime.pathfinding", "runtime", "PARTIAL",
+           "PathfindingService grid A* routes around obstacles; no navmesh (tests/phase14.rs)".into());
+    record("physics.collision_groups", "physics", "VERIFIED",
+           "PhysicsService collision groups via custom Jolt matrix filter (tests/phase14.rs)".into());
+
     // ---- known gaps (honest statuses) ----------------------------------
     record("data.studio_terrain_chunks", "data", "UNSUPPORTED",
            "Genuine Studio terrain voxel chunks are not decoded (no legal fixture available); BloxCLI terrain uses its documented BTR1 encoding".into());
