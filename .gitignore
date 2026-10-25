@@ -1,0 +1,11 @@
+/build/
+/target/
+*.tmp-*
+# Session scratch created next to place files at runtime.
+/*.bloxplay/
+/*.bloxnet/
+/*.bloxhistory/
+*.bloxplay/
+*.bloxnet/
+*.bloxhistory/
+.blox-surface-*.png

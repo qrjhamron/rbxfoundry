@@ -1,0 +1,26 @@
+[package]
+name = "bloxcli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless, CLI-only Roblox place editor for AI agents (Phase 1: DataModel + genuine RBXL/RBXLX I/O)"
+
+[[bin]]
+name = "bloxcli"
+path = "src/main.rs"
+
+[[bin]]
+name = "blox"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rbx_binary = "=3.0.1"
+rbx_xml = "=3.0.1"
+rbx_dom_weak = "=4.2.0"
+rbx_types = "=3.1.0"
+rbx_reflection_database = "=3.0.1"
+rbx_reflection = "=7.0.0"
+
+[dev-dependencies]

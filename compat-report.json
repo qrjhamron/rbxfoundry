@@ -1,0 +1,86 @@
+{
+  "checks": [
+    {
+      "area": "data",
+      "evidence": "23 instances, attributes/refs/scripts/terrain intact rbxl->rbxlx->rbxl",
+      "id": "data.complex_roundtrip",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "validate ok=true",
+      "id": "data.validate",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "Script + LocalScript execute under `run`; 0 script errors",
+      "id": "runtime.scripts_both_contexts",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "2 clients + server, isolated contexts, per-peer logs (full remote/latency coverage in tests/net.rs)",
+      "id": "net.two_clients",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "complex place renders (10 draw calls)",
+      "id": "visual.complex_render",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "visual",
+      "evidence": "293 ms/frame on this machine (software Vulkan); no Studio baseline",
+      "id": "perf.render_800x600",
+      "status": "PARTIAL"
+    },
+    {
+      "area": "visual",
+      "evidence": "StarterGui HUD rasterised at 390x844",
+      "id": "visual.ui_mobile",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "physics",
+      "evidence": "character grounded; R6 Motor6D rig + Animator in character model",
+      "id": "physics.character_and_rig",
+      "status": "VERIFIED"
+    },
+    {
+      "area": "data",
+      "evidence": "Genuine Studio terrain voxel chunks are not decoded (no legal fixture available); BloxCLI terrain uses its documented BTR1 encoding",
+      "id": "data.studio_terrain_chunks",
+      "status": "UNSUPPORTED"
+    },
+    {
+      "area": "runtime",
+      "evidence": "DataStoreService/HttpService are not implemented (offline)",
+      "id": "runtime.datastores",
+      "status": "UNSUPPORTED"
+    },
+    {
+      "area": "visual",
+      "evidence": "No Roblox Studio reference renders exist in this environment; pixel parity is not claimed",
+      "id": "visual.studio_pixel_parity",
+      "status": "UNTESTED"
+    },
+    {
+      "area": "physics",
+      "evidence": "CharacterVirtual does not push dynamic bodies; collision blocking is verified",
+      "id": "physics.character_pushes_bodies",
+      "status": "UNSUPPORTED"
+    }
+  ],
+  "generatedBy": "crates/bloxcli/tests/compat.rs",
+  "note": "VERIFIED means an internal automated check passes. No Roblox Studio reference data was available; nothing here is a Studio comparison.",
+  "suite": "bloxcli-compatibility",
+  "summary": {
+    "partial": 1,
+    "total": 12,
+    "unsupported": 3,
+    "untested": 1,
+    "verified": 7
+  }
+}
