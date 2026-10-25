@@ -13,7 +13,7 @@ use rbx_types::{
     UDim, UDim2, Variant, Vector2, Vector2int16, Vector3, Vector3int16,
 };
 
-use crate::tree::{
+use crate::protocol::tree::{
     base64_decode, base64_encode, err, CFrameValue, ColorKeypoint, Node, NumberKeypoint, PropValue,
     Result,
 };
@@ -55,7 +55,7 @@ fn fix_ref_properties(
 ) -> Result<()> {
     let self_ref = *ref_map
         .get(index_path)
-        .ok_or_else(|| crate::tree::Error(format!("internal: no referent for '{index_path}'")))?;
+        .ok_or_else(|| crate::protocol::tree::Error(format!("internal: no referent for '{index_path}'")))?;
     let ref_props: Vec<(String, String)> = node
         .properties
         .iter()
@@ -70,18 +70,18 @@ fn fix_ref_properties(
         } else if target_path == "." {
             // Self-reference to the tree root (distinct from None).
             *ref_map.get("").ok_or_else(|| {
-                crate::tree::Error("internal: no referent for the root".to_string())
+                crate::protocol::tree::Error("internal: no referent for the root".to_string())
             })?
         } else if let Some(index_path) = resolve_name_ref(root, &target_path) {
             *ref_map.get(&index_path).ok_or_else(|| {
-                crate::tree::Error(format!(
+                crate::protocol::tree::Error(format!(
                     "property '{name}' on '{}' references instance '{target_path}', which no longer exists",
                     node.name
                 ))
             })?
         } else {
             *ref_map.get(&target_path).ok_or_else(|| {
-                crate::tree::Error(format!(
+                crate::protocol::tree::Error(format!(
                     "property '{name}' on '{}' references instance '{target_path}', which no longer exists",
                     node.name
                 ))
@@ -89,7 +89,7 @@ fn fix_ref_properties(
         };
         let inst = dom
             .get_by_ref_mut(self_ref)
-            .ok_or_else(|| crate::tree::Error("internal: WeakDom instance missing".into()))?;
+            .ok_or_else(|| crate::protocol::tree::Error("internal: WeakDom instance missing".into()))?;
         inst.properties
             .insert(name.as_str().into(), Variant::Ref(target_ref));
     }
@@ -243,7 +243,7 @@ fn instance_to_node(
     for &child_ref in inst.children() {
         let child = dom
             .get_by_ref(child_ref)
-            .ok_or_else(|| crate::tree::Error("WeakDom contains a dangling child referent".into()))?;
+            .ok_or_else(|| crate::protocol::tree::Error("WeakDom contains a dangling child referent".into()))?;
         node.children.push(instance_to_node(dom, child, ref_paths, counter)?);
     }
     Ok(node)
@@ -437,7 +437,7 @@ pub fn prop_to_variant(class: &str, property: &str, value: &PropValue) -> Result
         PropValue::Enum(v) => Variant::Enum(Enum::from_u32(*v)),
         PropValue::BrickColor(v) => {
             let number = u16::try_from(*v)
-                .map_err(|_| crate::tree::Error(format!("BrickColor number {v} out of range")))?;
+                .map_err(|_| crate::protocol::tree::Error(format!("BrickColor number {v} out of range")))?;
             match BrickColor::from_number(number) {
                 Some(bc) => Variant::BrickColor(bc),
                 None => {

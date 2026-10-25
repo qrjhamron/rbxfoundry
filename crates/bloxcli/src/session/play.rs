@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as JsonValue};
 
-use crate::engine::{node_from_value, EngineClient};
+use crate::protocol::engine::{node_from_value, EngineClient};
 use crate::history::History;
 use crate::rbxio::{read_place, write_place};
-use crate::tree::{err, Error, Result};
+use crate::protocol::tree::{err, Error, Result};
 
 pub const FIXED_DT: f64 = 1.0 / 60.0;
 

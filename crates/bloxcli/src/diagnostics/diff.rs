@@ -8,7 +8,7 @@
 
 use serde_json::{json, Value as JsonValue};
 
-use crate::tree::{Node, PropValue};
+use crate::protocol::tree::{Node, PropValue};
 
 pub struct DiffEntry {
     pub kind: &'static str, // added | removed | class_changed | property_added | property_removed | property_changed

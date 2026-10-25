@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value as JsonValue};
 
-use crate::engine::EngineClient;
+use crate::protocol::engine::EngineClient;
 use crate::rbxio::read_place;
-use crate::tree::{err, Error, Result};
+use crate::protocol::tree::{err, Error, Result};
 
 pub fn session_dir(place: &Path) -> PathBuf {
     let name = place

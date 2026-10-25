@@ -10,8 +10,8 @@
 //! per template in `inspect`) must not be read as verified Studio
 //! parity. See COMPATIBILITY.md.
 
-use crate::engine::EngineClient;
-use crate::tree::{CFrameValue, PropValue, Result};
+use crate::protocol::engine::EngineClient;
+use crate::protocol::tree::{CFrameValue, PropValue, Result};
 
 pub struct TemplateInfo {
     pub name: &'static str,
@@ -93,7 +93,7 @@ pub fn apply(engine: &mut EngineClient, template: &str) -> Result<()> {
             engine.set("Workspace/SpawnLocation", "Neutral", &PropValue::Bool(true))?;
             Ok(())
         }
-        other => Err(crate::tree::Error(format!(
+        other => Err(crate::protocol::tree::Error(format!(
             "unknown template '{other}' (available: {})",
             registry().iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
         ))),

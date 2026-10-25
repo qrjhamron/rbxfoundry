@@ -12,7 +12,7 @@
 
 use rbx_reflection::ReflectionDatabase;
 
-use crate::tree::Node;
+use crate::protocol::tree::Node;
 
 pub struct Completion {
     pub label: String,

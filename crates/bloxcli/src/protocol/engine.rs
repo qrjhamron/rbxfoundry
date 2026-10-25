@@ -10,7 +10,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value as JsonValue};
 
-use crate::tree::{err, Error, Node, Result};
+use crate::protocol::tree::{err, Error, Node, Result};
 
 pub const PROTOCOL_VERSION: &str = "1";
 
@@ -160,7 +160,7 @@ impl EngineClient {
         &mut self,
         target: &str,
         property: &str,
-        value: &crate::tree::PropValue,
+        value: &crate::protocol::tree::PropValue,
     ) -> Result<JsonValue> {
         let value_json = serde_json::to_value(value)
             .map_err(|e| Error(format!("failed to serialize value: {e}")))?;
@@ -263,7 +263,7 @@ impl EngineClient {
     pub fn pivot(
         &mut self,
         target: &str,
-        value: Option<&crate::tree::PropValue>,
+        value: Option<&crate::protocol::tree::PropValue>,
     ) -> Result<JsonValue> {
         let mut params = json!({ "target": target });
         if let Some(value) = value {

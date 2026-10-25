@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::rbxio::write_atomic;
-use crate::tree::{Error, Result};
+use crate::protocol::tree::{Error, Result};
 
 const MAX_SNAPSHOTS: usize = 100;
 

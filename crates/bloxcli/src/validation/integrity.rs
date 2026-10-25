@@ -18,7 +18,7 @@ use std::path::Path;
 
 use serde_json::{json, Value as JsonValue};
 
-use crate::tree::{base64_decode, Node, PropValue};
+use crate::protocol::tree::{base64_decode, Node, PropValue};
 
 pub struct IntegrityIssue {
     pub severity: &'static str, // "error" | "warning"

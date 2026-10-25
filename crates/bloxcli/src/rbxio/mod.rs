@@ -2,13 +2,15 @@
 //! `rbx_binary` / `rbx_xml` serializers from the rbx-dom project. BloxCLI
 //! never writes JSON into a `.rbxl` file.
 
+pub mod convert;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use rbx_dom_weak::WeakDom;
 
-use crate::convert::{dom_to_node, node_to_dom};
-use crate::tree::{err, Error, Node, Result};
+use crate::rbxio::convert::{dom_to_node, node_to_dom};
+use crate::protocol::tree::{err, Error, Node, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlaceFormat {
@@ -62,7 +64,7 @@ pub fn format_for_model_path(path: &Path) -> Result<PlaceFormat> {
 /// reference index paths when wrapping/unwrapping a model root).
 fn shift_refs(node: &mut Node, f: &dyn Fn(&str) -> String) {
     for value in node.properties.values_mut() {
-        if let crate::tree::PropValue::Ref(target) = value {
+        if let crate::protocol::tree::PropValue::Ref(target) = value {
             if !target.is_empty() {
                 *target = f(target);
             }
