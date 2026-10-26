@@ -73,3 +73,20 @@ are dominated by process startup (~0.15 s) as before.
 | Studio session: 100 sequential CLI ops on one daemon | covered by `phase25.rs` (whole test ~1.6 s incl. process spawns) |
 
 No meaningful regression vs the Phase 25-29 baseline (ARCHITECTURE_AUDIT.md).
+
+## Runtime & Rendering Integration check (same host)
+
+| Operation | Value |
+| --- | ---: |
+| render 800x600 (200 parts) | 0.44 s |
+| ui render 1920x1080 | 0.39 s |
+| export rbxl -> rbxlx | 0.43 s |
+| validate | 0.20 s |
+| tree (213 instances) | 0.24 s |
+| play step x240 (physics) | 0.42 s |
+| Play screenshot (world + live GUI composite, 1280x720) | covered by `play_render.rs` (30 consecutive captures in one session, all valid) |
+| Session cycling stress (3x start/step/screenshot/stop, 300-instance churn) | covered by `demo_regressions.rs::gate7_repeated_sessions_are_stable` |
+
+No meaningful regression vs the Phase 25-29 baseline; play-step timing
+on this host fluctuates (0.14-0.45 s observed across loads) and remains
+dominated by process startup plus Lavapipe rasterization.
