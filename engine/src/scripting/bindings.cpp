@@ -773,10 +773,10 @@ int inst_index(lua_State* L) {
     }
 
     if (inst->class_name == "Players" && key == "LocalPlayer") {
-        if (rt->impl_->net_context == Runtime::NetContext::Client)
-            push_instance(L, rt->impl_->local_player);
-        else
-            lua_pushnil(L);
+        // Set on client engines by begin, and on the single-player
+        // hybrid by setup_player_gui; server engines never set it, so
+        // LocalPlayer is nil there as in Roblox.
+        push_instance(L, rt->impl_->local_player);
         return 1;
     }
     if (inst->class_name == "Player" && key == "Character") {

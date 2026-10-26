@@ -144,7 +144,22 @@ struct Daemon {
 pub fn run_daemon(engine_path: &Path, place: &Path, rig: &str) -> Result<()> {
     let dir = session_dir(place);
     std::fs::create_dir_all(&dir).map_err(|e| Error(e.to_string()))?;
-    let (node, _format) = read_place(place)?;
+    let (mut node, _format) = read_place(place)?;
+    // Solo play has one local player (as net sessions inject theirs):
+    // the engine clones StarterGui into this player's PlayerGui.
+    {
+        let pos = node
+            .children
+            .iter()
+            .position(|c| c.class_name == "Players")
+            .unwrap_or_else(|| {
+                node.children.push(crate::protocol::tree::Node::new("Players", "Players"));
+                node.children.len() - 1
+            });
+        if !node.children[pos].children.iter().any(|c| c.class_name == "Player") {
+            node.children[pos].children.push(crate::protocol::tree::Node::new("Player", "Player1"));
+        }
+    }
     let mut engine = EngineClient::spawn(engine_path)?;
     engine.load(&node)?;
     engine.call("runtime/begin", json!({"dataStoreDir": crate::app::session::datastore_dir(place).to_string_lossy()}))?;
@@ -235,6 +250,8 @@ impl Daemon {
 
     fn state_json(&mut self) -> Result<JsonValue> {
         let state = self.engine.call("physics/state", json!({}))?;
+        let tweens = self.engine.call("runtime/state", json!({}))
+            .ok().and_then(|s| s.get("tweens").cloned()).unwrap_or(json!([]));
         let gui = self.runtime_gui();
         Ok(json!({
             "playing": true,
@@ -248,6 +265,7 @@ impl Daemon {
             "heldKeys": self.held_keys,
             "logCount": self.logs.len(),
             "gui": gui,
+            "tweens": tweens,
         }))
     }
 
@@ -325,6 +343,11 @@ impl Daemon {
                         "x": request.get("x").cloned().unwrap_or(json!(0)),
                         "y": request.get("y").cloned().unwrap_or(json!(0)),
                         "width": width, "height": height,
+                    }))?,
+                    "touch" => self.engine.call("runtime/click", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "width": width, "height": height, "touch": true,
                     }))?,
                     "wheel" => self.engine.call("runtime/wheel", json!({
                         "x": request.get("x").cloned().unwrap_or(json!(0)),

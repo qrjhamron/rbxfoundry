@@ -71,7 +71,7 @@ pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "input" => {
-            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch", "click", "hover", "wheel", "type-text", "width", "height"], &["first-person", "third-person", "submit"])?;
+            let parsed = parse_cmd(rest, &["keys", "duration", "yaw", "pitch", "click", "touch", "hover", "wheel", "type-text", "width", "height"], &["first-person", "third-person", "submit"])?;
             let file = parsed.file()?;
             let keys: Vec<&str> = parsed.opt("keys").unwrap_or("").split(',')
                 .map(|k| k.trim()).filter(|k| !k.is_empty()).collect();
@@ -108,6 +108,17 @@ pub fn cmd_play(global: &Global, args: &[String]) -> Result<()> {
                 }))?;
                 emit(global,
                      format!("click ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
+                     json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
+                return Ok(());
+            }
+            if let Some(touch) = parsed.opt("touch") {
+                let (x, y) = parse_xy(touch, "--touch")?;
+                let state = crate::session::play::send_request(&file, &json!({
+                    "cmd": "gui", "kind": "touch", "x": x, "y": y,
+                    "width": viewport_w, "height": viewport_h,
+                }))?;
+                emit(global,
+                     format!("touch ({x}, {y}) -> {} {}", state["hit"]["path"], state["hit"]["event"]),
                      json!({"ok": true, "command": "play input", "hit": state["hit"], "state": state}));
                 return Ok(());
             }
@@ -313,7 +324,7 @@ pub fn cmd_net(global: &Global, args: &[String]) -> Result<()> {
             Ok(())
         }
         "input" => {
-            let parsed = parse_cmd(rest, &["player", "keys", "duration", "yaw"], &[])?;
+            let parsed = parse_cmd(rest, &["player", "keys", "duration", "yaw", "click", "touch"], &[])?;
             let file = parsed.file()?;
             let player = parsed.opt("player").unwrap_or("1");
             let keys: Vec<&str> = parsed
@@ -333,6 +344,20 @@ pub fn cmd_net(global: &Global, args: &[String]) -> Result<()> {
                 request["yawDeg"] = json!(yaw
                     .parse::<f64>()
                     .map_err(|_| usage_err("--yaw must be degrees"))?);
+            }
+            if let Some(click) = parsed.opt("click").or_else(|| parsed.opt("touch")) {
+                let kind = if parsed.opt("touch").is_some() { "touch" } else { "click" };
+                let (x, y) = {
+                    let mut it = click.split(',');
+                    (it.next().and_then(|v| v.trim().parse::<f64>().ok()).ok_or_else(|| usage_err("--click expects 'x,y'"))?,
+                     it.next().and_then(|v| v.trim().parse::<f64>().ok()).ok_or_else(|| usage_err("--click expects 'x,y'"))?)
+                };
+                let state = crate::session::net::send_request(&file, &json!({
+                    "cmd": "gui", "kind": kind, "player": player, "x": x, "y": y}))?;
+                emit(global,
+                    format!("net {kind} for player {player} -> {} {}", state["hit"]["path"], state["hit"]["event"]),
+                    json!({"ok": true, "command": "net input", "hit": state["hit"], "state": state}));
+                return Ok(());
             }
             let state = crate::session::net::send_request(&file, &request)?;
             emit(

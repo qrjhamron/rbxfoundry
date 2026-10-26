@@ -351,29 +351,57 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
                 if (ubool(*grad, "Enabled", true)) {
                     q.has_gradient = true;
                     q.gradient_degrees = static_cast<float>(ufloat(*grad, "Rotation", 0.0));
-                    // Last keypoint colour of the Color sequence, tinted by bg.
-                    std::array<float, 3> endc = bg;
+                    // Full keypoint evaluation (Gate 6): colour stops are
+                    // the ColorSequence keypoints tinted by BackgroundColor3;
+                    // alpha comes from the Transparency NumberSequence at
+                    // the same times. Missing sequences fall back to bg.
+                    struct Kp { float t; std::array<float, 3> c; };
+                    std::vector<Kp> colors{{0.0f, bg}, {1.0f, bg}};
                     if (const Variant* seq = uprop(*grad, "Color")) {
                         if (seq->complex_value.is_array() && !seq->complex_value.as_array().empty()) {
-                            const Json& last = seq->complex_value.as_array().back();
-                            if (const Json* col = last.find("color")) {
-                                if (col->is_array() && col->as_array().size() == 3) {
-                                    endc = {bg[0] * static_cast<float>(col->as_array()[0].as_double()),
-                                            bg[1] * static_cast<float>(col->as_array()[1].as_double()),
-                                            bg[2] * static_cast<float>(col->as_array()[2].as_double())};
+                            colors.clear();
+                            for (const Json& kp : seq->complex_value.as_array()) {
+                                float t = kp.find("time") ? static_cast<float>(kp.find("time")->as_double()) : 0.0f;
+                                std::array<float, 3> c = bg;
+                                if (const Json* col = kp.find("color")) {
+                                    if (col->is_array() && col->as_array().size() == 3) {
+                                        c = {bg[0] * static_cast<float>(col->as_array()[0].as_double()),
+                                             bg[1] * static_cast<float>(col->as_array()[1].as_double()),
+                                             bg[2] * static_cast<float>(col->as_array()[2].as_double())};
+                                    }
                                 }
+                                colors.push_back({t, c});
                             }
                         }
                     }
-                    float end_alpha = a;
-                    if (const Variant* tseq = uprop(*grad, "Transparency")) {
-                        if (tseq->complex_value.is_array() && !tseq->complex_value.as_array().empty()) {
-                            const Json& last = tseq->complex_value.as_array().back();
-                            if (const Json* val = last.find("value"))
-                                end_alpha = (1.0f - static_cast<float>(val->as_double())) * own_alpha;
+                    auto transp_at = [&](float t) {
+                        float v = 0.0f;
+                        if (const Variant* tseq = uprop(*grad, "Transparency")) {
+                            if (tseq->complex_value.is_array() && !tseq->complex_value.as_array().empty()) {
+                                const auto& arr = tseq->complex_value.as_array();
+                                v = static_cast<float>(arr.front().find("value") ? arr.front().find("value")->as_double() : 0.0);
+                                for (size_t i = 1; i < arr.size(); ++i) {
+                                    float t1 = arr[i].find("time") ? static_cast<float>(arr[i].find("time")->as_double()) : 1.0f;
+                                    float v1 = static_cast<float>(arr[i].find("value") ? arr[i].find("value")->as_double() : 0.0);
+                                    float t0 = arr[i - 1].find("time") ? static_cast<float>(arr[i - 1].find("time")->as_double()) : 0.0f;
+                                    float v0 = static_cast<float>(arr[i - 1].find("value") ? arr[i - 1].find("value")->as_double() : 0.0);
+                                    if (t <= t1) { v = (t1 > t0) ? v0 + (v1 - v0) * (t - t0) / (t1 - t0) : v1; break; }
+                                    v = v1;
+                                }
+                            }
                         }
+                        return v;
+                    };
+                    std::sort(colors.begin(), colors.end(), [](const Kp& x, const Kp& y) { return x.t < y.t; });
+                    q.gradient_stop_count = static_cast<uint32_t>(std::min(colors.size(), static_cast<size_t>(8)));
+                    for (uint32_t i = 0; i < q.gradient_stop_count; ++i) {
+                        q.gradient_times[i] = colors[i].t;
+                        // Alpha: bg alpha scaled by the Transparency
+                        // sequence at this keypoint time.
+                        q.gradient_stops[i] = {colors[i].c[0], colors[i].c[1], colors[i].c[2],
+                                               (1.0f - transp_at(colors[i].t)) * a};
                     }
-                    q.gradient_end = {endc[0], endc[1], endc[2], end_alpha};
+                    if (q.gradient_stop_count > 0) q.gradient_end = q.gradient_stops[q.gradient_stop_count - 1];
                 }
             }
             add_quad(ctx, q, clip, zkey);
@@ -1134,6 +1162,28 @@ UiScene build_ui_layout(const Instance& container, float area_x, float area_y,
     return scene;
 }
 
+// Piecewise-linear UIGradient keypoint evaluation shared semantics
+// with the Vulkan path (renderer.cpp keeps its own copy).
+static std::array<float, 4> eval_gradient_stops(const UiQuad& quad, float t) {
+    if (quad.gradient_stop_count == 0) {
+        std::array<float, 4> out;
+        for (int c = 0; c < 4; ++c) out[c] = quad.color[c] + (quad.gradient_end[c] - quad.color[c]) * t;
+        return out;
+    }
+    if (t <= quad.gradient_times[0]) return quad.gradient_stops[0];
+    for (uint32_t i = 1; i < quad.gradient_stop_count; ++i) {
+        if (t <= quad.gradient_times[i]) {
+            float t0 = quad.gradient_times[i - 1], t1 = quad.gradient_times[i];
+            float f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0f;
+            std::array<float, 4> out;
+            for (int c = 0; c < 4; ++c)
+                out[c] = quad.gradient_stops[i - 1][c] + (quad.gradient_stops[i][c] - quad.gradient_stops[i - 1][c]) * f;
+            return out;
+        }
+    }
+    return quad.gradient_stops[quad.gradient_stop_count - 1];
+}
+
 UiScene build_ui_scene(const DataModel& model, const UiOptions& options) {
     UiScene scene;
     scene.viewport_w = options.width;
@@ -1143,8 +1193,27 @@ UiScene build_ui_scene(const DataModel& model, const UiOptions& options) {
     RectF full_clip{-1e9f, -1e9f, 2e9f, 2e9f};
 
     // ---- ScreenGuis ----
+    // In play, ScreenGuis live under Players/<player>/PlayerGui (the
+    // live clones); StarterGui holds the edit-time originals. Prefer
+    // PlayerGui whenever any exists, as a real client would render.
+    std::vector<std::pair<const Instance*, std::string>> player_guis;
+    if (options.screen_gui.empty()) {
+        if (const Instance* players = find_service(model, "Players")) {
+            for (const auto& player : players->children) {
+                for (const auto& pg : player->children) {
+                    if (pg->class_name != "PlayerGui") continue;
+                    for (const auto& gui : pg->children) {
+                        if (gui->class_name == "ScreenGui")
+                            player_guis.push_back({gui.get(), "Players/" + player->name + "/PlayerGui/" + gui->name});
+                    }
+                }
+            }
+        }
+    }
     std::vector<const Instance*> screen_guis;
-    if (!options.screen_gui.empty()) {
+    if (!player_guis.empty()) {
+        // Rendered below through the prefix-carrying path.
+    } else if (!options.screen_gui.empty()) {
         std::string error;
         if (Instance* found = model.resolve_path(options.screen_gui, error)) {
             if (found->class_name == "ScreenGui") screen_guis.push_back(found);
@@ -1156,12 +1225,14 @@ UiScene build_ui_scene(const DataModel& model, const UiOptions& options) {
         for (const auto& child : starter->children)
             if (child->class_name == "ScreenGui") screen_guis.push_back(child.get());
     }
-    std::stable_sort(screen_guis.begin(), screen_guis.end(), [](const Instance* a, const Instance* b) {
-        double da = ufloat(*a, "DisplayOrder", 0), db = ufloat(*b, "DisplayOrder", 0);
-        return da != db ? da < db : a->name < b->name;
+    std::vector<std::pair<const Instance*, std::string>> ordered_guis;
+    if (!player_guis.empty()) ordered_guis = player_guis;
+    else for (const Instance* gui : screen_guis) ordered_guis.push_back({gui, "StarterGui/" + gui->name});
+    std::stable_sort(ordered_guis.begin(), ordered_guis.end(), [](const auto& a, const auto& b) {
+        double da = ufloat(*a.first, "DisplayOrder", 0), db = ufloat(*b.first, "DisplayOrder", 0);
+        return da != db ? da < db : a.first->name < b.first->name;
     });
-    for (const Instance* gui : screen_guis) {
-        std::string prefix = "StarterGui/" + gui->name;
+    for (const auto& [gui, prefix] : ordered_guis) {
         bool enabled = ubool(*gui, "Enabled", true);
         float inset = 0;
         if (!options.ignore_gui_inset && !ubool(*gui, "IgnoreGuiInset", false) &&
@@ -1423,9 +1494,10 @@ std::vector<uint8_t> rasterize_ui(const UiScene& scene, uint32_t width, uint32_t
                 if (quad.has_gradient) {
                     float rad = quad.gradient_degrees * 3.14159265f / 180.0f;
                     float gx = std::cos(rad), gy = std::sin(rad);
-                    float t = (lx * gx + ly * gy) / std::max(quad.width + quad.height, 1.0f) + 0.5f;
+                    float denom = std::abs(quad.width * gx) + std::abs(quad.height * gy);
+                    float t = denom > 0 ? 0.5f + ((lx - quad.width / 2) * gx + (ly - quad.height / 2) * gy) / denom : 0.0f;
                     t = std::clamp(t, 0.0f, 1.0f);
-                    for (int c = 0; c < 4; ++c) colour[c] = quad.color[c] + (quad.gradient_end[c] - quad.color[c]) * t;
+                    colour = eval_gradient_stops(quad, t);
                 }
                 if (tex && tw > 0 && th > 0) {
                     float u = quad.u0 + (lx / std::max(quad.width, 1.0f)) * (quad.u1 - quad.u0);

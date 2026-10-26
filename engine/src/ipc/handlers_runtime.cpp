@@ -113,7 +113,9 @@ EngineServer::Reply EngineServer::handle_runtime(const std::string& method, cons
                 if (const Json* v = params.find("y")) y = v->as_double();
                 if (const Json* v = params.find("width")) vw = static_cast<uint32_t>(v->as_int(vw));
                 if (const Json* v = params.find("height")) vh = static_cast<uint32_t>(v->as_int(vh));
-                auto hit = method == "runtime/click" ? runtime_->gui_click(x, y, vw, vh)
+                bool touch = params.find("touch") && params.find("touch")->as_bool();
+                auto hit = (method == "runtime/click" && touch) ? runtime_->gui_touch(x, y, vw, vh)
+                    : method == "runtime/click" ? runtime_->gui_click(x, y, vw, vh)
                                                      : runtime_->gui_hover(x, y, vw, vh);
                 Json result = runtime_state();
                 Json hit_json = Json::object();

@@ -1177,6 +1177,20 @@ std::array<float, 4> gradient_color(const UiQuad& quad, float cx, float cy) {
     float denom = std::abs(quad.width * gx) + std::abs(quad.height * gy);
     float t = denom > 0 ? 0.5f + ((cx - quad.width / 2) * gx + (cy - quad.height / 2) * gy) / denom : 0.0f;
     t = std::clamp(t, 0.0f, 1.0f);
+    if (quad.gradient_stop_count > 0) {
+        if (t <= quad.gradient_times[0]) return quad.gradient_stops[0];
+        for (uint32_t i = 1; i < quad.gradient_stop_count; ++i) {
+            if (t <= quad.gradient_times[i]) {
+                float t0 = quad.gradient_times[i - 1], t1 = quad.gradient_times[i];
+                float f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0f;
+                std::array<float, 4> out;
+                for (int c = 0; c < 4; ++c)
+                    out[c] = quad.gradient_stops[i - 1][c] + (quad.gradient_stops[i][c] - quad.gradient_stops[i - 1][c]) * f;
+                return out;
+            }
+        }
+        return quad.gradient_stops[quad.gradient_stop_count - 1];
+    }
     std::array<float, 4> out;
     for (int c = 0; c < 4; ++c) out[c] = quad.color[c] + (quad.gradient_end[c] - quad.color[c]) * t;
     return out;

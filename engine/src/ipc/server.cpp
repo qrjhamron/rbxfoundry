@@ -135,6 +135,21 @@ Json EngineServer::runtime_state() {
             state.set("active", Json(runtime_active_));
             if (runtime_) {
                 state.set("time", Json(runtime_->time()));
+                {
+                    Json tweens = Json::array();
+                    for (const auto& t : runtime_->tween_states()) {
+                        Json item = Json::object();
+                        item.set("target", Json(t.target_path));
+                        Json props = Json::array();
+                        for (const auto& name : t.properties) props.push(Json(name));
+                        item.set("properties", std::move(props));
+                        item.set("playbackState", Json(t.playback_state));
+                        item.set("elapsed", Json(t.elapsed));
+                        item.set("duration", Json(t.duration));
+                        tweens.push(std::move(item));
+                    }
+                    state.set("tweens", std::move(tweens));
+                }
                 state.set("threads", Json(static_cast<int64_t>(runtime_->thread_count())));
                 Json logs = Json::array();
                 for (const auto& entry : runtime_->logs()) {

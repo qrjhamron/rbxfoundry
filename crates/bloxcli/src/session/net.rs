@@ -991,6 +991,31 @@ impl NetDaemon {
                 self.persist_snapshots()?;
                 Ok((self.state_json()?, false))
             }
+            "gui" => {
+                // Per-client GUI input: hit-tested in that client's own
+                // runtime (its PlayerGui), never the server's.
+                let idx = self.player_index(request)?;
+                let kind = request.get("kind").and_then(|v| v.as_str()).unwrap_or("click");
+                let width = request.get("width").and_then(|v| v.as_i64()).unwrap_or(1280);
+                let height = request.get("height").and_then(|v| v.as_i64()).unwrap_or(720);
+                let resp = match kind {
+                    "wheel" => self.clients[idx].call("runtime/wheel", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "delta": request.get("delta").cloned().unwrap_or(json!(1)),
+                        "width": width, "height": height,
+                    }))?,
+                    _ => self.clients[idx].call("runtime/click", json!({
+                        "x": request.get("x").cloned().unwrap_or(json!(0)),
+                        "y": request.get("y").cloned().unwrap_or(json!(0)),
+                        "width": width, "height": height,
+                        "touch": kind == "touch",
+                    }))?,
+                };
+                self.absorb(Peer::Client(idx), &resp);
+                self.persist_snapshots()?;
+                Ok((resp, false))
+            }
             "screenshot" => Ok((self.screenshot(request)?, false)),
             "logs" => {
                 let mut all = Vec::new();

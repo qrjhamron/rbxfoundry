@@ -6,6 +6,7 @@
 #include "blox/gui/ui.hpp"
 
 #include <algorithm>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -912,7 +913,75 @@ void Runtime::complete_invoke(int invoke_id, const std::string& result_json, boo
     t->ready_step = 0;
 }
 
+void Runtime::setup_player_gui() {
+    if (impl_->net_context == NetContext::Server) return;
+    Instance* players = nullptr;
+    Instance* starter = nullptr;
+    for (const auto& child : model_.root().children) {
+        if (child->class_name == "Players") players = child.get();
+        if (child->class_name == "StarterGui") starter = child.get();
+    }
+    if (!players || !starter) return;
+    Instance* player = impl_->local_player;
+    if (!player) {
+        for (const auto& child : players->children)
+            if (child->class_name == "Player") { player = child.get(); break; }
+    }
+    if (!player) return;
+    impl_->local_player = player;
+    for (const auto& child : player->children)
+        if (child->class_name == "PlayerGui") return; // already cloned
+    if (starter->children.empty()) return;
+    // Roblox clones StarterGui's contents wholesale (ScreenGuis and
+    // the scripts that drive them) into PlayerGui.
+    Instance& gui_root = model_.add_instance(*player, "PlayerGui", "PlayerGui");
+    for (const auto& child : starter->children)
+        model_.clone_instance(*child, gui_root, child->name);
+}
+
+std::vector<Runtime::TweenInfoState> Runtime::tween_states() const {
+    static const char* kNames[] = {"Begin", "Delayed", "Playing", "Paused", "Completed", "Cancelled"};
+    std::vector<TweenInfoState> out;
+    for (const auto& t : impl_->tweens) {
+        if (!t->inst) continue;
+        TweenInfoState info;
+        info.target_path = model_.path_of(*t->inst);
+        for (const auto& [name, _] : t->goals) info.properties.push_back(name);
+        info.playback_state = kNames[std::clamp(t->state, 0, 5)];
+        info.elapsed = t->elapsed;
+        info.duration = t->duration;
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
 bool Runtime::start_scripts() {
+    setup_player_gui();
+    // After cloning, client scripts are the copies under PlayerGui;
+    // StarterGui originals stay inert on the client (Roblox semantics).
+    bool player_gui_exists = false;
+    {
+        std::vector<Instance*> probe{&model_.root()};
+        while (!probe.empty()) {
+            Instance* cur = probe.back(); probe.pop_back();
+            if (cur->class_name == "PlayerGui") { player_gui_exists = true; break; }
+            for (const auto& c : cur->children) probe.push_back(c.get());
+        }
+    }
+    auto under_player_gui = [](const Instance* inst) {
+        for (const Instance* cur = inst->parent; cur; cur = cur->parent)
+            if (cur->class_name == "PlayerGui") return true;
+        return false;
+    };
+    // StarterPlayer/StarterPack/ReplicatedFirst LocalScripts are client
+    // scripts in Roblox (they clone to PlayerScripts/backpack); we run
+    // them in place (PlayerScripts cloning is not modelled).
+    auto under_client_container = [](const Instance* inst) {
+        for (const Instance* cur = inst->parent; cur; cur = cur->parent)
+            if (cur->class_name == "StarterPlayer" || cur->class_name == "StarterPack" ||
+                cur->class_name == "ReplicatedFirst") return true;
+        return false;
+    };
     struct Found {
         Instance* inst;
         bool local;
@@ -938,9 +1007,11 @@ bool Runtime::start_scripts() {
         if (inst->class_name == "Script") {
             if (!under_starter(inst)) server.push_back({inst, false});
         } else if (inst->class_name == "LocalScript") {
-            if (under_starter(inst)) client.push_back({inst, true});
+            if ((player_gui_exists && under_player_gui(inst)) || under_client_container(inst) ||
+                (!player_gui_exists && under_starter(inst))) client.push_back({inst, true});
+            else if (player_gui_exists && under_starter(inst)) { /* original; its clone runs */ }
             else log("warn", "LocalScript '" + model_.path_of(*inst) +
-                                 "' is not in a client container (StarterGui/StarterPlayer/...); not run",
+                                 "' is not in a client container (PlayerGui/StarterGui/StarterPlayer/...); not run",
                      model_.path_of(*inst));
         }
     }
@@ -1250,6 +1321,18 @@ Runtime::GuiHit Runtime::gui_click(double x, double y, uint32_t viewport_w, uint
         out.event = "MouseButton1Click";
     }
     process_threads(this);
+    return out;
+}
+
+Runtime::GuiHit Runtime::gui_touch(double x, double y, uint32_t viewport_w, uint32_t viewport_h) {
+    GuiHit out = gui_click(x, y, viewport_w, viewport_h);
+    if (!out.hit || out.class_name == "TextBox") return out;
+    std::string error;
+    if (Instance* inst = model_.resolve_path(out.path, error)) {
+        fire_instance_signal(this, L_, inst, "TouchTap", {});
+        process_threads(this);
+    }
+    out.event = "TouchTap";
     return out;
 }
 

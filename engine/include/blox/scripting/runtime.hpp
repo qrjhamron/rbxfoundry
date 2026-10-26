@@ -41,6 +41,19 @@ public:
     // Starts every runnable script (server Scripts first, then
     // LocalScripts). Returns false only if the VM itself failed.
     bool start_scripts();
+    // Clones StarterGui ScreenGuis into the local player's PlayerGui
+    // (client/single contexts only) so LocalScripts execute against the
+    // per-player GUI, as in Roblox. No-op without a Player/StarterGui.
+    void setup_player_gui();
+    struct TweenInfoState {
+        std::string target_path;
+        std::vector<std::string> properties;
+        std::string playback_state;
+        double elapsed = 0.0;
+        double duration = 0.0;
+    };
+    // Active/recent tweens for inspectability (play state).
+    std::vector<TweenInfoState> tween_states() const;
     // Evaluates a chunk in a fresh sandboxed thread (agent/test entry
     // point). Returns false with `error` on compile/runtime failure.
     bool eval(const std::string& source, const std::string& chunk_name, std::string& error,
@@ -77,6 +90,9 @@ public:
         std::string event; // what was fired ("" when nothing fired)
     };
     GuiHit gui_click(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
+    // Touch tap: same native hit-test; fires TouchTap plus the button
+    // activation signals a touch produces in Roblox.
+    GuiHit gui_touch(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
     GuiHit gui_hover(double x, double y, uint32_t viewport_w, uint32_t viewport_h);
     // Mouse wheel over a ScrollingFrame (27E): adjusts CanvasPosition
     // and fires InputBegan on the hit frame.

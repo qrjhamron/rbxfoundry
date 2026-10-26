@@ -30,10 +30,14 @@ struct UiQuad {
     std::string texture_path;               // empty = glyph atlas / solid
     bool use_atlas = false;                 // glyphs
     float corner_radius = 0;                // rounded-rect SDF radius (pixels)
-    // Optional UIGradient: second colour + rotation (degrees).
+    // Optional UIGradient: keypoint stops (time + RGBA, max 8) along
+    // the rotated gradient axis. gradient_end mirrors the last stop.
     bool has_gradient = false;
     std::array<float, 4> gradient_end{1, 1, 1, 1};
     float gradient_degrees = 0;
+    std::array<std::array<float, 4>, 8> gradient_stops{};
+    std::array<float, 8> gradient_times{};
+    uint32_t gradient_stop_count = 0;
     // Clip rectangle (pixels); default = unclipped.
     float clip_x = -1e9f, clip_y = -1e9f, clip_w = 2e9f, clip_h = 2e9f;
     // ZIndex sort key (chain for Sibling behaviour) + insertion sequence.
