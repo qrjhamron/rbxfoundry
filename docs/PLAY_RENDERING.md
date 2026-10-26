@@ -27,12 +27,29 @@ positions from the runtime model) next to time/character/camera/bodies.
 engine: its replicated snapshot, its camera, its live GUI. Each client
 runtime keeps independent GUI state in its StarterGui.
 
+## PlayerGui
+
+At script start, client and single-player runtimes clone StarterGui's
+contents wholesale into the local player's `PlayerGui`
+(`Players/<player>/PlayerGui`), exactly where Roblox puts them.
+LocalScripts execute against the clones; layout, hit-testing and
+screenshots prefer PlayerGui over the StarterGui originals whenever a
+PlayerGui exists. `Players.LocalPlayer` resolves on client/single
+engines and is nil on server engines. Server edits to StarterGui after
+cloning do not propagate to clones (Roblox semantics: use RemoteEvents).
+StarterPlayer/StarterPack/ReplicatedFirst LocalScripts run in place;
+PlayerScripts cloning is not modelled. Solo play injects `Player1`
+(like net sessions inject their players); `ResetOnSpawn` is not
+re-cloned yet.
+
+`play state` enumerates active tweens (target, properties,
+PlaybackState, elapsed/duration). Touch input (`play input --touch`,
+`net input --player N --touch`) fires `TouchTap` through the same
+native hit-test; net GUI input is per-client by construction.
+
 ## Known limitations
 
-- There is no separate `Players/<player>/PlayerGui` container yet: client
-  LocalScripts run against StarterGui and that live state is what renders.
-  Scripts addressing `PlayerGui` by path do not resolve.
-- Active tweens are observable through rendered frames and state, but are
-  not enumerated in `play state`.
+- `ResetOnSpawn` does not yet re-clone PlayerGui on respawn.
+- UIGradient evaluates at most 8 keypoints and does not model `Offset`.
 - The character is part of the 3D scene extraction; GUI is composited in
   screen space only (SurfaceGui/BillboardGui are part of the 3D pass).
