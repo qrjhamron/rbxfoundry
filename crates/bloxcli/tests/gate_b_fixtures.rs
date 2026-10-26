@@ -76,7 +76,7 @@ fn animated_inventory_fixture_end_to_end() {
     let shot_a = dir.join("play-a.png");
     cli_json(&["play", "screenshot", &f, "--output", shot_a.to_str().unwrap(), "--width", "1280", "--height", "720"]);
     let click = cli_json(&["play", "input", &f, "--click", "76,74", "--width", "1280", "--height", "720"]);
-    assert_eq!(click["hit"]["path"], "StarterGui/HUD/OpenButton", "native hit-test found the button: {click}");
+    assert_eq!(click["hit"]["path"], "Players/Player1/PlayerGui/HUD/OpenButton", "native hit-test found the button: {click}");
     cli_json(&["play", "step", &f, "--steps", "30"]);
     let shot_mid = dir.join("play-mid.png");
     cli_json(&["play", "screenshot", &f, "--output", shot_mid.to_str().unwrap(), "--width", "1280", "--height", "720"]);

@@ -53,9 +53,11 @@ fn play_screenshot_composites_live_gui_over_world() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let f = hud_place(&dir);
-    add(&f, "ServerScriptService", "Script", "Live");
-    set(&f, "ServerScriptService/Live", "Source", "String", r#"
-        local panel = game.StarterGui.HUD.Panel
+    // Client-side driver (Roblox semantics: server scripts cannot
+    // recolor an already-cloned PlayerGui).
+    add(&f, "StarterGui/HUD", "LocalScript", "Live");
+    set(&f, "StarterGui/HUD/Live", "Source", "String", r#"
+        local panel = script.Parent.Panel
         panel.BackgroundColor3 = Color3.fromRGB(0, 0, 255)
         task.wait(0.2)
         game:GetService("TweenService"):Create(panel, TweenInfo.new(1, Enum.EasingStyle.Linear),
@@ -154,4 +156,203 @@ fn net_screenshots_include_each_clients_gui() {
     }
     assert_ne!(pngs[0], pngs[1], "clients render different viewpoints");
     cli_ok(&["net", "stop", &f]);
+}
+
+#[test]
+fn playergui_clone_is_the_live_gui() {
+    // PlayerGui: the engine clones StarterGui into the local player's
+    // PlayerGui; LocalScripts run against the clone, LocalPlayer
+    // resolves, and screenshots/state show the clone (not the original).
+    let dir = std::env::temp_dir().join(format!("bloxcli-playergui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    add(&f, "StarterGui/HUD", "LocalScript", "Ctl");
+    set(&f, "StarterGui/HUD/Ctl", "Source", "String", r#"
+        local player = game.Players.LocalPlayer
+        print("localplayer", player and player.Name or "nil")
+        local panel = player.PlayerGui.HUD.Panel
+        panel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+        print("pg panel", panel:GetFullName())
+    "#);
+    cli_json(&["play", "start", &f]);
+    let logs = cli_json(&["play", "logs", &f]);
+    let text = serde_json::to_string(&logs).unwrap();
+    assert!(text.contains("localplayer Player1"), "LocalPlayer resolves in play: {text}");
+    assert!(text.contains("PlayerGui"), "script ran against the clone: {text}");
+    let state = cli_json(&["play", "state", &f]);
+    let rects = state["state"]["gui"]["rects"].as_array().expect("rects");
+    let panel = rects.iter().find(|r| r["name"].as_str() == Some("Panel")).expect("panel rect");
+    assert!(panel["path"].as_str().unwrap().contains("PlayerGui"), "live GUI is the PlayerGui clone: {panel}");
+    let shot = dir.join("pg.png");
+    let r = cli_json(&["play", "screenshot", &f, "--output", shot.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "140,120"]);
+    let c = probe(&r, 0);
+    assert!(c.1 > 120 && c.0 < 100, "clone mutation (green) in screenshot: {c:?}");
+    cli_json(&["play", "stop", &f]);
+}
+
+#[test]
+fn play_state_enumerates_active_tweens() {
+    let dir = std::env::temp_dir().join(format!("bloxcli-tweens-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    add(&f, "ServerScriptService", "Script", "Anim");
+    set(&f, "ServerScriptService/Anim", "Source", "String", r#"
+        local panel = game.StarterGui.HUD.Panel
+        game:GetService("TweenService"):Create(panel, TweenInfo.new(2, Enum.EasingStyle.Linear),
+            {Position = UDim2.new(0, 440, 0, 40)}):Play()
+    "#);
+    cli_json(&["play", "start", &f]);
+    cli_json(&["play", "step", &f, "--steps", "30"]);
+    let state = cli_json(&["play", "state", &f]);
+    let tweens = state["state"]["tweens"].as_array().expect("tweens in play state");
+    let tw = tweens.iter().find(|t| t["target"].as_str().unwrap_or("").ends_with("HUD/Panel"))
+        .unwrap_or_else(|| panic!("panel tween enumerated: {tweens:?}"));
+    assert_eq!(tw["playbackState"], "Playing", "{tw}");
+    assert!(tw["properties"].as_array().unwrap().iter().any(|p| p == "Position"), "{tw}");
+    cli_json(&["play", "step", &f, "--steps", "150"]);
+    let done = cli_json(&["play", "state", &f]);
+    let tw2 = done["state"]["tweens"].as_array().unwrap().iter()
+        .find(|t| t["target"].as_str().unwrap_or("").ends_with("HUD/Panel")).expect("tween after finish");
+    assert_eq!(tw2["playbackState"], "Completed", "{tw2}");
+    cli_json(&["play", "stop", &f]);
+}
+
+#[test]
+fn touch_input_and_two_client_gui_independence() {
+    // Touch: native hit-test fires TouchTap through the play session.
+    let dir = std::env::temp_dir().join(format!("bloxcli-touch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    add(&f, "StarterGui/HUD", "TextButton", "Toggle");
+    set(&f, "StarterGui/HUD/Toggle", "Position", "UDim2", "0,300,0,40");
+    set(&f, "StarterGui/HUD/Toggle", "Size", "UDim2", "0,120,0,50");
+    set(&f, "StarterGui/HUD/Toggle", "Text", "String", "TOGGLE");
+    add(&f, "StarterGui/HUD", "LocalScript", "Ctl");
+    set(&f, "StarterGui/HUD/Ctl", "Source", "String", r#"
+        local panel = script.Parent.Panel
+        script.Parent.Toggle.TouchTap:Connect(function()
+            panel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+            print("touched")
+        end)
+    "#);
+    cli_json(&["play", "start", &f]);
+    let hit = cli_json(&["play", "input", &f, "--touch", "360,101"]);
+    assert_eq!(hit["hit"]["event"], "TouchTap", "{hit}");
+    let logs = cli_json(&["play", "logs", &f]);
+    assert!(serde_json::to_string(&logs).unwrap().contains("touched"), "{logs}");
+    let shot = dir.join("touch.png");
+    let r = cli_json(&["play", "screenshot", &f, "--output", shot.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "140,120"]);
+    assert!(probe(&r, 0).1 > 120, "touch mutation in frame: {:?}", probe(&r, 0));
+    cli_json(&["play", "stop", &f]);
+
+    // Two clients: a GUI click in client 1 must not change client 2.
+    let dir = std::env::temp_dir().join(format!("bloxcli-netgui-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    add(&f, "StarterGui/HUD", "TextButton", "Toggle");
+    set(&f, "StarterGui/HUD/Toggle", "Position", "UDim2", "0,300,0,40");
+    set(&f, "StarterGui/HUD/Toggle", "Size", "UDim2", "0,120,0,50");
+    set(&f, "StarterGui/HUD/Toggle", "Text", "String", "TOGGLE");
+    add(&f, "StarterGui/HUD", "LocalScript", "Ctl");
+    set(&f, "StarterGui/HUD/Ctl", "Source", "String", r#"
+        local panel = script.Parent.Panel
+        script.Parent.Toggle.MouseButton1Click:Connect(function()
+            panel.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+        end)
+    "#);
+    cli_ok(&["net", "start", &f, "--players", "2", "--latency", "0"]);
+    cli_ok(&["net", "step", &f, "--steps", "30"]);
+    let hit = cli_json(&["net", "input", &f, "--player", "1", "--click", "360,101"]);
+    assert_eq!(hit["hit"]["event"], "MouseButton1Click", "{hit}");
+    assert!(hit["hit"]["path"].as_str().unwrap().contains("PlayerGui"), "{hit}");
+    let s1 = dir.join("c1.png");
+    let r1 = cli_json(&["net", "screenshot", &f, "--player", "1", "--output", s1.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "140,120"]);
+    let s2 = dir.join("c2.png");
+    let r2 = cli_json(&["net", "screenshot", &f, "--player", "2", "--output", s2.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "140,120"]);
+    assert!(probe(&r1, 0).1 > 120, "client1 panel toggled green: {:?}", probe(&r1, 0));
+    let c2 = probe(&r2, 0);
+    assert!(c2.0 > 150 && c2.1 < 120, "client2 panel untouched (red): {c2:?}");
+    cli_ok(&["net", "stop", &f]);
+}
+
+#[test]
+fn physics_render_consistency_and_repeated_captures() {
+    // A Luau-teleported part must appear where physics/DataModel say
+    // it is: red wall is off-screen, teleports in front of the camera,
+    // and the centre-frame probe turns red. 30 captures stay valid.
+    let dir = std::env::temp_dir().join(format!("bloxcli-consistency-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    add(&f, "Workspace", "Part", "Wall");
+    set(&f, "Workspace/Wall", "Size", "Vector3", "30,14,1");
+    cli_ok(&["move", &f, "--target", "Workspace/Wall", "--position", "100,7,0"]);
+    set(&f, "Workspace/Wall", "Anchored", "Bool", "true");
+    set(&f, "Workspace/Wall", "Color", "Color3", "1,0,0");
+    add(&f, "ServerScriptService", "Script", "Move");
+    set(&f, "ServerScriptService/Move", "Source", "String", r#"
+        task.wait(0.5)
+        workspace.Wall.Position = Vector3.new(0, 5, -12)
+        print("wall moved")
+    "#);
+    cli_json(&["play", "start", &f]);
+    let shot = dir.join("a.png");
+    let r0 = cli_json(&["play", "screenshot", &f, "--output", shot.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "640,300"]);
+    let before = probe(&r0, 0);
+    assert!(!(before.0 > 120 && before.1 < 100), "wall not in frame yet: {before:?}");
+    cli_json(&["play", "step", &f, "--steps", "60"]);
+    let r1 = cli_json(&["play", "screenshot", &f, "--output", shot.to_str().unwrap(),
+        "--width", "1280", "--height", "720", "--probes", "640,300"]);
+    let after = probe(&r1, 0);
+    assert!(after.0 > 90 && after.0 > after.1 + 50 && after.0 > after.2 + 50, "teleported wall renders red at frame centre: {after:?}");
+    for i in 0..30 {
+        let s = dir.join(format!("rep{i}.png"));
+        let r = cli_json(&["play", "screenshot", &f, "--output", s.to_str().unwrap(),
+            "--width", "640", "--height", "360", "--probes", "320,150"]);
+        assert!(probe(&r, 0).0 > 100, "capture {i} stable");
+        let bytes = std::fs::read(&s).unwrap();
+        assert!(&bytes[0..4] == b"\x89PNG", "capture {i} genuine PNG");
+    }
+    cli_json(&["play", "stop", &f]);
+}
+
+#[test]
+fn gradient_keypoints_interpolate_in_render() {
+    // UIGradient with red->blue keypoints: left probe red-dominant,
+    // right blue-dominant, middle genuinely mixed (not hard bands).
+    let dir = std::env::temp_dir().join(format!("bloxcli-gradient-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = hud_place(&dir);
+    // UIGradient multiplies BackgroundColor3; white shows the pure ramp.
+    set(&f, "StarterGui/HUD/Panel", "BackgroundColor3", "Color3", "1,1,1");
+    add(&f, "StarterGui/HUD/Panel", "UIGradient", "Grad");
+    add(&f, "ServerScriptService", "Script", "Set");
+    set(&f, "ServerScriptService/Set", "Source", "String", r#"
+        game.StarterGui.HUD.Panel.Grad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.new(1, 0, 0)),
+            ColorSequenceKeypoint.new(1, Color3.new(0, 0, 1)),
+        })
+    "#);
+    let out = dir.join("runtime.rbxl");
+    cli_json(&["run", &f, "--duration", "0.05", "--save-runtime", out.to_str().unwrap()]);
+    let shot = dir.join("grad.png");
+    let r = cli_json(&["ui", "render", out.to_str().unwrap(), "--ignore-inset",
+        "--output", shot.to_str().unwrap(), "--width", "1280", "--height", "720",
+        "--probe", "60,100;140,100;220,100"]);
+    let probes = r["probes"].as_array().unwrap();
+    let px = |i: usize| { let a = probes[i]["rgba"].as_array().unwrap(); (a[0].as_i64().unwrap(), a[1].as_i64().unwrap(), a[2].as_i64().unwrap()) };
+    let (l, m, rr) = (px(0), px(1), px(2));
+    assert!(l.0 > 150 && l.2 < 100, "left red: {l:?}");
+    assert!(rr.2 > 120 && rr.0 < 130, "right blue: {rr:?}");
+    assert!(m.0 > 60 && m.2 > 60, "middle interpolates: {m:?}");
 }
