@@ -35,9 +35,11 @@ struct UiQuad {
     bool has_gradient = false;
     std::array<float, 4> gradient_end{1, 1, 1, 1};
     float gradient_degrees = 0;
-    std::array<std::array<float, 4>, 8> gradient_stops{};
-    std::array<float, 8> gradient_times{};
+    std::vector<std::array<float, 4>> gradient_stops;
+    std::vector<float> gradient_times;
     uint32_t gradient_stop_count = 0;
+    // UIGradient.Offset along the gradient axis (axis units).
+    float gradient_offset = 0;
     // Clip rectangle (pixels); default = unclipped.
     float clip_x = -1e9f, clip_y = -1e9f, clip_w = 2e9f, clip_h = 2e9f;
     // ZIndex sort key (chain for Sibling behaviour) + insertion sequence.

@@ -13,6 +13,10 @@
 #ifdef BLOX_HAVE_FREETYPE
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#ifdef BLOX_HAVE_HARFBUZZ
+#include <hb.h>
+#include <hb-ft.h>
+#endif
 #endif
 
 namespace blox {
@@ -144,6 +148,13 @@ bool is_cjk_codepoint(char32_t cp) {
 // callers and drawn as .notdef boxes — never silently dropped.
 struct FaceChain {
     std::vector<FT_Face> faces;
+#ifdef BLOX_HAVE_HARFBUZZ
+    std::vector<hb_font_t*> hb_fonts; // parallel to faces, lazy
+    void ensure_hb() {
+        if (!hb_fonts.empty() || faces.empty()) return;
+        for (FT_Face f : faces) hb_fonts.push_back(hb_ft_font_create_referenced(f));
+    }
+#endif
     FT_Face pick(char32_t cp) const {
         for (FT_Face face : faces) {
             if (FT_Get_Char_Index(face, cp) != 0) return face;
@@ -156,6 +167,10 @@ struct FaceChain {
         }
     }
     void dispose() {
+#ifdef BLOX_HAVE_HARFBUZZ
+        for (hb_font_t* f : hb_fonts) hb_font_destroy(f);
+        hb_fonts.clear();
+#endif
         for (FT_Face face : faces) FT_Done_Face(face);
         faces.clear();
     }
@@ -181,6 +196,90 @@ FaceChain load_chain(const std::string& primary_path) {
         }
     }
     return chain;
+}
+
+// One shaped glyph: face + glyph index with pixel advances/offsets.
+// Shaping runs through HarfBuzz on the primary face when available
+// (kerning, ligatures, Arabic forms, combining-mark placement come
+// from the shaper); clusters the primary face cannot represent fall
+// back per-codepoint through the fallback chain. Without HarfBuzz the
+// whole run is per-codepoint (previous behaviour).
+struct ShapedGlyph {
+    FT_Face face = nullptr;
+    FT_UInt index = 0;
+    float advance = 0;
+    float x_offset = 0;
+    float y_offset = 0; // up-positive
+    char32_t cp = 0;
+    bool missing = false;
+};
+
+std::vector<ShapedGlyph> shape_text(FaceChain& chain, const std::string& text, float size_px,
+                                    std::set<char32_t>* missing_out) {
+    std::vector<ShapedGlyph> out;
+    std::vector<char32_t> cps = decode_utf8(text);
+    if (cps.empty() || chain.faces.empty()) return out;
+    chain.set_size(size_px);
+    FT_Face primary = chain.faces.front();
+    auto push_fallback = [&](char32_t cp) {
+        if (is_joiner(cp)) return;
+        FT_Face face = chain.pick(cp);
+        if (!face) {
+            if (missing_out) missing_out->insert(cp);
+            float adv = 0;
+            if (FT_Load_Glyph(primary, 0, FT_LOAD_DEFAULT) == 0) adv = static_cast<float>(primary->glyph->advance.x) / 64.0f;
+            out.push_back({primary, 0, adv, 0, 0, cp, true});
+            return;
+        }
+        FT_UInt idx = FT_Get_Char_Index(face, cp);
+        float adv = 0;
+        if (FT_Load_Glyph(face, idx, FT_LOAD_DEFAULT) == 0) adv = static_cast<float>(face->glyph->advance.x) / 64.0f;
+        if (is_combining_mark(cp)) adv = 0; // cluster-origin placement (unshaped path)
+        out.push_back({face, idx, adv, 0, 0, cp, false});
+    };
+#ifdef BLOX_HAVE_HARFBUZZ
+    chain.ensure_hb();
+    if (!chain.hb_fonts.empty()) {
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_add_utf8(buf, text.c_str(), static_cast<int>(text.size()), 0, static_cast<int>(text.size()));
+        hb_buffer_guess_segment_properties(buf);
+        hb_shape(chain.hb_fonts.front(), buf, nullptr, 0);
+        unsigned count = 0;
+        hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &count);
+        hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &count);
+        std::vector<size_t> cp_byte;
+        size_t b = 0;
+        for (char32_t cp : cps) {
+            cp_byte.push_back(b);
+            b += (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4);
+        }
+        auto cp_at_byte = [&](size_t byte) -> char32_t {
+            auto it = std::lower_bound(cp_byte.begin(), cp_byte.end(), byte);
+            if (it == cp_byte.end()) return 0;
+            return cps[static_cast<size_t>(it - cp_byte.begin())];
+        };
+        for (unsigned i = 0; i < count; ++i) {
+            char32_t cluster_cp = cp_at_byte(static_cast<size_t>(infos[i].cluster));
+            if (infos[i].codepoint != 0) {
+                out.push_back({primary, infos[i].codepoint,
+                               static_cast<float>(pos[i].x_advance) / 64.0f,
+                               static_cast<float>(pos[i].x_offset) / 64.0f,
+                               static_cast<float>(pos[i].y_offset) / 64.0f,
+                               cluster_cp, false});
+            } else {
+                size_t start_byte = static_cast<size_t>(infos[i].cluster);
+                size_t end_byte = (i + 1 < count) ? static_cast<size_t>(infos[i + 1].cluster) : text.size();
+                if (end_byte < start_byte) std::swap(start_byte, end_byte);
+                for (size_t k = 0; k < cps.size(); ++k)
+                    if (cp_byte[k] >= start_byte && cp_byte[k] < end_byte) push_fallback(cps[k]);
+            }
+        }
+        hb_buffer_destroy(buf);
+        return out;
+    }
+#endif
+    for (char32_t cp : cps) push_fallback(cp);
+    return out;
 }
 
 // Packs glyphs into a simple shelf atlas, appending quads for each glyph.
@@ -235,23 +334,8 @@ FaceChain& cached_chain(const std::string& font_path) {
 float measure_text(const std::string& text, float size_px, const std::string& font_path) {
     FaceChain& chain = cached_chain(font_path);
     if (chain.faces.empty()) return 0.0f;
-    chain.set_size(size_px);
-    FT_Face primary = chain.faces.front();
     float width = 0;
-    for (char32_t cp : decode_utf8(text)) {
-        if (is_combining_mark(cp) || is_joiner(cp)) continue; // zero-width in cluster
-        FT_Face face = chain.pick(cp);
-        if (!face) {
-            // No font covers this codepoint: reserve .notdef width.
-            if (FT_Load_Char(primary, 0, FT_LOAD_DEFAULT) == 0)
-                width += static_cast<float>(primary->glyph->advance.x >> 6);
-            continue;
-        }
-        FT_UInt index = FT_Get_Char_Index(face, cp);
-        if (FT_Load_Glyph(face, index, FT_LOAD_DEFAULT) == 0) {
-            width += static_cast<float>(face->glyph->advance.x >> 6);
-        }
-    }
+    for (const ShapedGlyph& g : shape_text(chain, text, size_px, nullptr)) width += g.advance;
     return width;
 }
 
@@ -283,145 +367,104 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
         uint32_t w = 0, h = 0;
         bool empty = false;
     };
-    std::map<std::tuple<std::string, char32_t, int>, CachedGlyph> glyph_cache;
+    std::map<std::tuple<uintptr_t, FT_UInt, int>, CachedGlyph> glyph_cache;
 
     const size_t first_quad = quads.size();
     for (const TextJob& job : jobs) {
-    // TextStroke underlay: the same glyph emitted at 8 offsets in the
-    // stroke colour beneath the fill (drawn first, same sort key).
-    auto emit_stroke = [&](const UiQuad& base) {
-        if (job.stroke_width <= 0 || job.stroke_color[3] <= 0.003f) return;
-        const float w = job.stroke_width;
-        const float offs[8][2] = {{-w, -w}, {0, -w}, {w, -w}, {-w, 0}, {w, 0}, {-w, w}, {0, w}, {w, w}};
-        for (const auto& o : offs) {
-            UiQuad sq = base;
-            sq.x += o[0];
-            sq.y += o[1];
-            sq.color = job.stroke_color;
-            quads.push_back(sq);
-        }
-    };
-
+        // TextStroke underlay: two rings of offsets (raster dilation)
+        // in the stroke colour beneath the fill, same sort key.
+        auto emit_stroke = [&](const UiQuad& base) {
+            if (job.stroke_width <= 0 || job.stroke_color[3] <= 0.003f) return;
+            const float w = job.stroke_width;
+            for (float ring : {0.5f, 1.0f}) {
+                const float d = w * ring;
+                const float offs[8][2] = {{-d, -d}, {0, -d}, {d, -d}, {-d, 0}, {d, 0}, {-d, d}, {0, d}, {d, d}};
+                for (const auto& o : offs) {
+                    UiQuad sq = base;
+                    sq.x += o[0];
+                    sq.y += o[1];
+                    sq.color = job.stroke_color;
+                    quads.push_back(sq);
+                }
+            }
+        };
         FaceChain* chain = get_chain(job.font_path);
         if (!chain) continue;
-        chain->set_size(job.size_px);
-        FT_Face primary = chain->faces.front();
+        std::vector<ShapedGlyph> glyphs = shape_text(*chain, job.text, job.size_px, missing_out);
         float pen_x = job.x;
-        float cluster_x = job.x;
-        float baseline = job.y;
-        for (char32_t cp : decode_utf8(job.text)) {
-            if (cp == U'\n') continue;
-            if (is_joiner(cp)) continue;
-            bool combining = is_combining_mark(cp);
-            auto cache_key = std::make_tuple(job.font_path, cp, static_cast<int>(job.size_px * 4));
-            if (auto cached = glyph_cache.find(cache_key); cached != glyph_cache.end()) {
-                const CachedGlyph& g = cached->second;
-                float gx = (combining ? cluster_x : pen_x) + g.bearing_x;
-                float gy = baseline - g.bearing_y;
-                if (!combining) { cluster_x = pen_x; pen_x += g.advance; }
-                if (g.empty) continue;
-                if (gx + g.w < job.clip_x || gx > job.clip_x + job.clip_w ||
-                    gy + g.h < job.clip_y || gy > job.clip_y + job.clip_h) {
-                    continue;
-                }
-                UiQuad quad;
-                quad.x = gx;
-                quad.y = gy;
-                quad.width = static_cast<float>(g.w);
-                quad.height = static_cast<float>(g.h);
-                quad.u0 = g.rect[0] / atlas_w;
-                quad.u1 = g.rect[2] / atlas_w;
-                quad.v0 = g.rect[1];
-                quad.v1 = g.rect[3];
-                quad.color = job.color;
-                quad.use_atlas = true;
-                quad.sort_key = job.sort_key;
-                quad.owner_path = job.owner_path;
-                quad.sequence = job.sequence;
-                emit_stroke(quad);
-                quads.push_back(quad);
-                continue;
-            }
-            FT_Face face = chain->pick(cp);
-            FT_UInt index = 0;
-            if (face) {
-                index = FT_Get_Char_Index(face, cp);
-            } else {
-                // No installed font covers this codepoint: draw the
-                // primary font's .notdef box and report it (the caller
-                // turns this into a scene warning).
-                if (missing_out) missing_out->insert(cp);
-                face = primary;
-                index = 0;
-            }
-            if (FT_Load_Glyph(face, index, FT_LOAD_RENDER) != 0) continue;
-            FT_GlyphSlot glyph = face->glyph;
-            float gx = (combining ? cluster_x : pen_x) + glyph->bitmap_left;
-            float gy = baseline - glyph->bitmap_top;
-            if (!combining) { cluster_x = pen_x; pen_x += static_cast<float>(glyph->advance.x >> 6); }
-            FT_Bitmap& bmp = glyph->bitmap;
-            if (bmp.width == 0 || bmp.rows == 0) {
+        const float baseline = job.y;
+        for (const ShapedGlyph& sg : glyphs) {
+            if (sg.cp == U'\n') continue;
+            const float gx_pen = pen_x + sg.x_offset;
+            pen_x += sg.advance;
+            auto cache_key = std::make_tuple(reinterpret_cast<uintptr_t>(sg.face), sg.index,
+                                             static_cast<int>(job.size_px * 4));
+            auto it = glyph_cache.find(cache_key);
+            if (it == glyph_cache.end()) {
                 CachedGlyph g;
                 g.empty = true;
-                g.bearing_x = static_cast<float>(glyph->bitmap_left);
-                g.bearing_y = static_cast<float>(glyph->bitmap_top);
-                g.advance = static_cast<float>(glyph->advance.x >> 6);
-                glyph_cache[cache_key] = g;
-                continue;
-            }
-            // Clip: drop glyphs fully outside the clip rect.
-            if (gx + bmp.width < job.clip_x || gx > job.clip_x + job.clip_w ||
-                gy + bmp.rows < job.clip_y || gy > job.clip_y + job.clip_h) {
-                continue;
-            }
-            // Normalise bitmap pixel modes to 8-bit coverage.
-            std::vector<unsigned char> converted;
-            const unsigned char* coverage = bmp.buffer;
-            uint32_t coverage_pitch = static_cast<uint32_t>(std::abs(bmp.pitch));
-            if (bmp.pixel_mode == FT_PIXEL_MODE_MONO) {
-                converted.assign(static_cast<size_t>(bmp.width) * bmp.rows, 0);
-                for (uint32_t row = 0; row < bmp.rows; ++row) {
-                    for (uint32_t col = 0; col < bmp.width; ++col) {
-                        unsigned char byte = bmp.buffer[static_cast<size_t>(row) * coverage_pitch + col / 8];
-                        converted[static_cast<size_t>(row) * bmp.width + col] =
-                            (byte & (0x80 >> (col % 8))) ? 255 : 0;
+                if (sg.face && FT_Load_Glyph(sg.face, sg.index, FT_LOAD_RENDER) == 0) {
+                    FT_GlyphSlot glyph = sg.face->glyph;
+                    FT_Bitmap& bmp = glyph->bitmap;
+                    g.bearing_x = static_cast<float>(glyph->bitmap_left);
+                    g.bearing_y = static_cast<float>(glyph->bitmap_top);
+                    g.advance = static_cast<float>(glyph->advance.x) / 64.0f;
+                    if (bmp.width != 0 && bmp.rows != 0) {
+                        // Normalise bitmap pixel modes to 8-bit coverage.
+                        std::vector<unsigned char> converted;
+                        const unsigned char* coverage = bmp.buffer;
+                        uint32_t coverage_pitch = static_cast<uint32_t>(std::abs(bmp.pitch));
+                        bool usable = true;
+                        if (bmp.pixel_mode == FT_PIXEL_MODE_MONO) {
+                            converted.assign(static_cast<size_t>(bmp.width) * bmp.rows, 0);
+                            for (uint32_t row = 0; row < bmp.rows; ++row) {
+                                for (uint32_t col = 0; col < bmp.width; ++col) {
+                                    unsigned char byte = bmp.buffer[static_cast<size_t>(row) * coverage_pitch + col / 8];
+                                    converted[static_cast<size_t>(row) * bmp.width + col] =
+                                        (byte & (0x80 >> (col % 8))) ? 255 : 0;
+                                }
+                            }
+                            coverage = converted.data();
+                            coverage_pitch = bmp.width;
+                        } else if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
+                            // Colour glyph (e.g. emoji): alpha as coverage;
+                            // drawn in the text colour (colour bitmap
+                            // fonts not reproduced - see COMPATIBILITY.md).
+                            converted.assign(static_cast<size_t>(bmp.width) * bmp.rows, 0);
+                            for (size_t px = 0; px < converted.size(); ++px)
+                                converted[px] = bmp.buffer[px * 4 + 3];
+                            coverage = converted.data();
+                            coverage_pitch = bmp.width;
+                        } else if (bmp.pixel_mode != FT_PIXEL_MODE_GRAY) {
+                            usable = false;
+                        }
+                        if (usable) {
+                            g.rect = packer.add(coverage, bmp.width, bmp.rows, coverage_pitch);
+                            g.w = bmp.width;
+                            g.h = bmp.rows;
+                            g.empty = false;
+                        }
                     }
                 }
-                coverage = converted.data();
-                coverage_pitch = bmp.width;
-            } else if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
-                // Colour glyph (e.g. emoji): use its alpha as coverage;
-                // the glyph shape is drawn in the text colour (colour
-                // bitmap fonts are not reproduced — see COMPATIBILITY.md).
-                converted.assign(static_cast<size_t>(bmp.width) * bmp.rows, 0);
-                for (size_t px = 0; px < converted.size(); ++px) {
-                    converted[px] = bmp.buffer[px * 4 + 3];
-                }
-                coverage = converted.data();
-                coverage_pitch = bmp.width;
-            } else if (bmp.pixel_mode != FT_PIXEL_MODE_GRAY) {
-                continue;
+                it = glyph_cache.emplace(cache_key, g).first;
             }
-            auto rect = packer.add(coverage, bmp.width, bmp.rows, coverage_pitch);
-            {
-                CachedGlyph g;
-                g.rect = rect;
-                g.bearing_x = static_cast<float>(glyph->bitmap_left);
-                g.bearing_y = static_cast<float>(glyph->bitmap_top);
-                g.advance = static_cast<float>(glyph->advance.x >> 6);
-                g.w = bmp.width;
-                g.h = bmp.rows;
-                glyph_cache[cache_key] = g;
+            const CachedGlyph& g = it->second;
+            if (g.empty) continue;
+            const float gx = gx_pen + g.bearing_x;
+            const float gy = baseline - sg.y_offset - g.bearing_y;
+            if (gx + g.w < job.clip_x || gx > job.clip_x + job.clip_w ||
+                gy + g.h < job.clip_y || gy > job.clip_y + job.clip_h) {
+                continue;
             }
             UiQuad quad;
             quad.x = gx;
             quad.y = gy;
-            quad.width = static_cast<float>(bmp.width);
-            quad.height = static_cast<float>(bmp.rows);
-            quad.u0 = rect[0] / atlas_w;
-            quad.u1 = rect[2] / atlas_w;
-            quad.v0 = rect[1]; // pixel space; normalised below
-            quad.v1 = rect[3];
+            quad.width = static_cast<float>(g.w);
+            quad.height = static_cast<float>(g.h);
+            quad.u0 = g.rect[0] / atlas_w;
+            quad.u1 = g.rect[2] / atlas_w;
+            quad.v0 = g.rect[1];
+            quad.v1 = g.rect[3];
             quad.color = job.color;
             quad.use_atlas = true;
             quad.sort_key = job.sort_key;
@@ -431,6 +474,7 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
             quads.push_back(quad);
         }
     }
+
     // Finalise the atlas: it may have grown past 1024 rows; only now is
     // the true height known, so normalise v coordinates here.
     atlas_h = std::max(1024u, packer.height());

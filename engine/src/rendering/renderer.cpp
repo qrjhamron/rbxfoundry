@@ -1176,7 +1176,7 @@ std::array<float, 4> gradient_color(const UiQuad& quad, float cx, float cy) {
     float gx = std::cos(rad), gy = std::sin(rad);
     float denom = std::abs(quad.width * gx) + std::abs(quad.height * gy);
     float t = denom > 0 ? 0.5f + ((cx - quad.width / 2) * gx + (cy - quad.height / 2) * gy) / denom : 0.0f;
-    t = std::clamp(t, 0.0f, 1.0f);
+    t = std::clamp(t - quad.gradient_offset, 0.0f, 1.0f);
     if (quad.gradient_stop_count > 0) {
         if (t <= quad.gradient_times[0]) return quad.gradient_stops[0];
         for (uint32_t i = 1; i < quad.gradient_stop_count; ++i) {
@@ -1214,7 +1214,8 @@ RenderResult Renderer::render_ui(const UiScene& scene, const UiRenderRequest& re
     std::vector<uint32_t> indices;
     struct BatchRange { std::string key; uint32_t first; uint32_t count; };
     std::vector<BatchRange> batches;
-    auto add_quad_verts = [&](const UiQuad& q, const std::string& key) {
+    auto add_quad_verts = [&](const UiQuad& q, const std::string& key,
+                              const std::array<std::array<float, 4>, 4>* corner_override = nullptr) {
         uint32_t base = static_cast<uint32_t>(vertices.size());
         const float xs[4] = {q.x, q.x + q.width, q.x + q.width, q.x};
         const float ys[4] = {q.y, q.y, q.y + q.height, q.y + q.height};
@@ -1226,7 +1227,7 @@ RenderResult Renderer::render_ui(const UiScene& scene, const UiRenderRequest& re
             UiVertex v{};
             v.pos[0] = xs[i]; v.pos[1] = ys[i];
             v.uv[0] = us[i]; v.uv[1] = vs[i];
-            auto col = gradient_color(q, lxs[i], lys[i]);
+            auto col = corner_override ? (*corner_override)[i] : gradient_color(q, lxs[i], lys[i]);
             std::memcpy(v.color, col.data(), sizeof(v.color));
             v.clip[0] = q.clip_x; v.clip[1] = q.clip_y; v.clip[2] = q.clip_w; v.clip[3] = q.clip_h;
             v.local[0] = lxs[i]; v.local[1] = lys[i];
@@ -1249,7 +1250,48 @@ RenderResult Renderer::render_ui(const UiScene& scene, const UiRenderRequest& re
     }
     for (const auto& quad : scene.quads) {
         std::string key = quad.use_atlas ? "__atlas__" : (quad.texture_path.empty() ? "__white__" : quad.texture_path);
-        add_quad_verts(quad, key);
+        // Multi-stop gradients: the GPU path colours quad corners, so
+        // >2 stops are subdivided along an axis-aligned gradient axis
+        // into per-segment quads with exact corner colours (the
+        // software path evaluates stops per-pixel already). Rotated
+        // multi-stop gradients keep the corner approximation.
+        bool subdivided = false;
+        if (quad.has_gradient && quad.gradient_stop_count > 2 && quad.texture_path.empty() && !quad.use_atlas) {
+            float rad = quad.gradient_degrees * 3.14159265f / 180.0f;
+            float gx = std::cos(rad), gy = std::sin(rad);
+            bool horizontal = std::abs(gx) >= std::abs(gy) && std::abs(gy) < 1e-4f;
+            bool vertical = std::abs(gy) > std::abs(gx) && std::abs(gx) < 1e-4f;
+            if (horizontal || vertical) {
+                subdivided = true;
+                for (uint32_t i = 1; i < quad.gradient_stop_count; ++i) {
+                    float t0 = quad.gradient_times[i - 1], t1 = quad.gradient_times[i];
+                    UiQuad sub = quad;
+                    sub.has_gradient = false;
+                    sub.gradient_stop_count = 0;
+                    sub.corner_radius = 0;
+                    std::array<std::array<float, 4>, 4> corners;
+                    if (horizontal) {
+                        float a = gx >= 0 ? t0 : 1.0f - t1;
+                        float b = gx >= 0 ? t1 : 1.0f - t0;
+                        sub.x = quad.x + a * quad.width;
+                        sub.width = (b - a) * quad.width;
+                        float lx0 = sub.x - quad.x, lx1 = lx0 + sub.width;
+                        corners = {gradient_color(quad, lx0, 0), gradient_color(quad, lx1, 0),
+                                   gradient_color(quad, lx1, quad.height), gradient_color(quad, lx0, quad.height)};
+                    } else {
+                        float a = gy >= 0 ? t0 : 1.0f - t1;
+                        float b = gy >= 0 ? t1 : 1.0f - t0;
+                        sub.y = quad.y + a * quad.height;
+                        sub.height = (b - a) * quad.height;
+                        float ly0 = sub.y - quad.y, ly1 = ly0 + sub.height;
+                        corners = {gradient_color(quad, 0, ly0), gradient_color(quad, quad.width, ly0),
+                                   gradient_color(quad, quad.width, ly1), gradient_color(quad, 0, ly1)};
+                    }
+                    add_quad_verts(sub, key, &corners);
+                }
+            }
+        }
+        if (!subdivided) add_quad_verts(quad, key);
     }
 
     // ---- textures ----

@@ -393,7 +393,12 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
                         return v;
                     };
                     std::sort(colors.begin(), colors.end(), [](const Kp& x, const Kp& y) { return x.t < y.t; });
-                    q.gradient_stop_count = static_cast<uint32_t>(std::min(colors.size(), static_cast<size_t>(8)));
+                    auto off = uvec2(*grad, "Offset", {0, 0});
+                    float rad = static_cast<float>(ufloat(*grad, "Rotation", 0.0)) * 3.14159265f / 180.0f;
+                    q.gradient_offset = static_cast<float>(off[0] * std::cos(rad) + off[1] * std::sin(rad));
+                    q.gradient_stop_count = static_cast<uint32_t>(colors.size());
+                    q.gradient_stops.resize(q.gradient_stop_count);
+                    q.gradient_times.resize(q.gradient_stop_count);
                     for (uint32_t i = 0; i < q.gradient_stop_count; ++i) {
                         q.gradient_times[i] = colors[i].t;
                         // Alpha: bg alpha scaled by the Transparency
@@ -1508,7 +1513,7 @@ std::vector<uint8_t> rasterize_ui(const UiScene& scene, uint32_t width, uint32_t
                     float gx = std::cos(rad), gy = std::sin(rad);
                     float denom = std::abs(quad.width * gx) + std::abs(quad.height * gy);
                     float t = denom > 0 ? 0.5f + ((lx - quad.width / 2) * gx + (ly - quad.height / 2) * gy) / denom : 0.0f;
-                    t = std::clamp(t, 0.0f, 1.0f);
+                    t = std::clamp(t - quad.gradient_offset, 0.0f, 1.0f);
                     colour = eval_gradient_stops(quad, t);
                 }
                 if (tex && tw > 0 && th > 0) {

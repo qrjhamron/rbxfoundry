@@ -81,6 +81,17 @@ target_link_libraries(blox_gui PUBLIC blox_datamodel PNG::PNG)
 if(Freetype_FOUND)
     target_link_libraries(blox_gui PUBLIC Freetype::Freetype)
     target_compile_definitions(blox_gui PUBLIC BLOX_HAVE_FREETYPE=1)
+    # HarfBuzz shaping (Gate 2C): optional; text falls back to
+    # per-codepoint advances when absent.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(HARFBUZZ QUIET harfbuzz)
+    endif()
+    if(HARFBUZZ_FOUND)
+        target_link_libraries(blox_gui PUBLIC ${HARFBUZZ_LIBRARIES})
+        target_include_directories(blox_gui PUBLIC ${HARFBUZZ_INCLUDE_DIRS})
+        target_compile_definitions(blox_gui PUBLIC BLOX_HAVE_HARFBUZZ=1)
+    endif()
 endif()
 
 add_library(blox_rendering STATIC src/rendering/scene.cpp src/rendering/mesh.cpp src/rendering/renderer.cpp src/rendering/image.cpp ${BLOX_SPV_HEADER})
