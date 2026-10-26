@@ -287,6 +287,21 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
 
     const size_t first_quad = quads.size();
     for (const TextJob& job : jobs) {
+    // TextStroke underlay: the same glyph emitted at 8 offsets in the
+    // stroke colour beneath the fill (drawn first, same sort key).
+    auto emit_stroke = [&](const UiQuad& base) {
+        if (job.stroke_width <= 0 || job.stroke_color[3] <= 0.003f) return;
+        const float w = job.stroke_width;
+        const float offs[8][2] = {{-w, -w}, {0, -w}, {w, -w}, {-w, 0}, {w, 0}, {-w, w}, {0, w}, {w, w}};
+        for (const auto& o : offs) {
+            UiQuad sq = base;
+            sq.x += o[0];
+            sq.y += o[1];
+            sq.color = job.stroke_color;
+            quads.push_back(sq);
+        }
+    };
+
         FaceChain* chain = get_chain(job.font_path);
         if (!chain) continue;
         chain->set_size(job.size_px);
@@ -323,6 +338,7 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
                 quad.sort_key = job.sort_key;
                 quad.owner_path = job.owner_path;
                 quad.sequence = job.sequence;
+                emit_stroke(quad);
                 quads.push_back(quad);
                 continue;
             }
@@ -411,6 +427,7 @@ bool rasterize_text(const std::vector<TextJob>& jobs, std::vector<UiQuad>& quads
             quad.sort_key = job.sort_key;
             quad.owner_path = job.owner_path;
             quad.sequence = job.sequence;
+            emit_stroke(quad);
             quads.push_back(quad);
         }
     }

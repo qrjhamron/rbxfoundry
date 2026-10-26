@@ -627,6 +627,12 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
                     job.size_px = rsize;
                     auto rc = run.style.has_color ? run.style.color : color;
                     job.color = {rc[0], rc[1], rc[2], a};
+                    {
+                        auto sc = ucolor(inst, "TextStrokeColor3", {0, 0, 0});
+                        float sa = (1.0f - static_cast<float>(ufloat(inst, "TextStrokeTransparency", 1.0))) * a;
+                        job.stroke_color = {sc[0], sc[1], sc[2], sa};
+                        job.stroke_width = sa > 0.003f ? std::max(1.0f, std::round(rsize * 0.055f)) : 0.0f;
+                    }
                     job.font_path = rich_font_for(run.style, font);
                     job.clip_x = clip.x; job.clip_y = clip.y; job.clip_w = clip.w; job.clip_h = clip.h;
                     job.sort_key = zkey;
@@ -677,6 +683,12 @@ void emit_own_quads(const Instance& inst, const RectF& rect, const RectF& conten
             job.y = start_y + static_cast<float>(i) * line_h + size; // baseline approx
             job.size_px = size;
             job.color = {color[0], color[1], color[2], a};
+            {
+                auto sc = ucolor(inst, "TextStrokeColor3", {0, 0, 0});
+                float sa = (1.0f - static_cast<float>(ufloat(inst, "TextStrokeTransparency", 1.0))) * a;
+                job.stroke_color = {sc[0], sc[1], sc[2], sa};
+                job.stroke_width = sa > 0.003f ? std::max(1.0f, std::round(size * 0.055f)) : 0.0f;
+            }
             job.font_path = font;
             job.clip_x = clip.x; job.clip_y = clip.y; job.clip_w = clip.w; job.clip_h = clip.h;
             job.sort_key = zkey;

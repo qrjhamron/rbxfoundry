@@ -105,6 +105,9 @@ struct TextJob {
     float x, y;          // baseline origin (pixels)
     float size_px;
     std::array<float, 4> color;
+    // TextStroke: outline colour (RGBA) + width in pixels (0 = none).
+    std::array<float, 4> stroke_color{0, 0, 0, 0};
+    float stroke_width = 0;
     std::string font_path;
     // Clip rectangle (pixels): glyphs outside are dropped at quad level.
     float clip_x = -1e9f, clip_y = -1e9f, clip_w = 2e9f, clip_h = 2e9f;

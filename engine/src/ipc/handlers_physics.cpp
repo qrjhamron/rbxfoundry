@@ -13,6 +13,18 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                 physics_->spawn_character(rig);
                 physics_->build_world();
                 runtime_->set_physics(physics_.get());
+                runtime_->set_character_resolver([&](Instance* player) -> Instance* {
+                    if (!physics_ || !player) return nullptr;
+                    for (size_t i = 0; i < physics_->character_count(); ++i) {
+                        Instance* m = physics_->character_model_at(i);
+                        if (m && m->name == player->name) return m;
+                    }
+                    // Solo play: the single character ("Player") belongs
+                    // to the single player regardless of name spelling.
+                    if (physics_->character_count() == 1) return physics_->character_model_at(0);
+                    return nullptr;
+                });
+
                 Json result = Json::object();
                 result.set("bodies", Json(static_cast<int64_t>(physics_->body_count())));
                 result.set("skippedBodies", Json(static_cast<int64_t>(physics_->skipped_bodies())));
@@ -39,12 +51,15 @@ EngineServer::Reply EngineServer::handle_physics(const std::string& method, cons
                     }
                 }
                 physics_->build_world();
-                runtime_->set_character_resolver([&](Instance* player) -> Instance* {
+runtime_->set_character_resolver([&](Instance* player) -> Instance* {
                     if (!physics_ || !player) return nullptr;
                     for (size_t i = 0; i < physics_->character_count(); ++i) {
                         Instance* m = physics_->character_model_at(i);
                         if (m && m->name == player->name) return m;
                     }
+                    // Solo play: the single character ("Player") belongs
+                    // to the single player regardless of name spelling.
+                    if (physics_->character_count() == 1) return physics_->character_model_at(0);
                     return nullptr;
                 });
                 Json result = Json::object();
