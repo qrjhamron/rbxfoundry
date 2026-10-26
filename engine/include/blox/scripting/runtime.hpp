@@ -45,6 +45,14 @@ public:
     // (client/single contexts only) so LocalScripts execute against the
     // per-player GUI, as in Roblox. No-op without a Player/StarterGui.
     void setup_player_gui();
+    // Character lifecycle (Gate 1): fired by the physics IPC layer on
+    // death/respawn. on_character_respawn also applies ScreenGui
+    // ResetOnSpawn semantics to the local player's PlayerGui.
+    void on_character_removing();
+    void on_character_respawn();
+    // Starts one script instance's main thread (used at join and when
+    // ResetOnSpawn re-clones a ScreenGui).
+    void start_script_instance(Instance* inst);
     struct TweenInfoState {
         std::string target_path;
         std::vector<std::string> properties;

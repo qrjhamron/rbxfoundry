@@ -937,6 +937,29 @@ void Runtime::setup_player_gui() {
     Instance& gui_root = model_.add_instance(*player, "PlayerGui", "PlayerGui");
     for (const auto& child : starter->children)
         model_.clone_instance(*child, gui_root, child->name);
+    // PlayerScripts: cloned once at join from StarterPlayerScripts;
+    // deliberately NOT re-cloned or re-run on respawn.
+    Instance* scripts_src = nullptr;
+    for (const auto& child : model_.root().children)
+        if (child->class_name == "StarterPlayerScripts") scripts_src = child.get();
+    if (!scripts_src) {
+        for (const auto& child : model_.root().children) {
+            if (child->class_name != "StarterPlayer") continue;
+            for (const auto& sub : child->children)
+                if (sub->class_name == "StarterPlayerScripts" || sub->name == "StarterPlayerScripts")
+                    scripts_src = sub.get();
+        }
+    }
+    if (scripts_src && !scripts_src->children.empty()) {
+        bool exists = false;
+        for (const auto& child : player->children)
+            if (child->class_name == "PlayerScripts") exists = true;
+        if (!exists) {
+            Instance& ps = model_.add_instance(*player, "PlayerScripts", "PlayerScripts");
+            for (const auto& child : scripts_src->children)
+                model_.clone_instance(*child, ps, child->name);
+        }
+    }
 }
 
 std::vector<Runtime::TweenInfoState> Runtime::tween_states() const {
@@ -955,6 +978,102 @@ std::vector<Runtime::TweenInfoState> Runtime::tween_states() const {
     return out;
 }
 
+void Runtime::start_script_instance(Instance* inst) {
+    auto source_it = inst->properties.find("Source");
+    std::string source = (source_it != inst->properties.end() &&
+                          source_it->second.type == ValueType::String)
+                             ? source_it->second.string_value
+                             : "";
+    if (source.empty()) return;
+    std::string path = model_.path_of(*inst);
+    Thread* t = make_thread(this, L_, path);
+    push_instance(t->co, inst);
+    lua_setglobal(t->co, "script");
+    std::string error;
+    if (!load_chunk(t->co, source, "=" + path, error)) {
+        report_error(error, error, path);
+        t->dead = true;
+        return;
+    }
+    if (impl_->debug_mode) {
+        auto it = impl_->debug_breakpoints.find(path);
+        if (it != impl_->debug_breakpoints.end()) {
+            for (int line : it->second) lua_breakpoint(t->co, -1, line, 1);
+        }
+    }
+    resume_thread(this, t);
+}
+
+namespace {
+Instance* local_character_of(DataModel& model, Instance* player) {
+    Instance* workspace = nullptr;
+    for (const auto& child : model.root().children)
+        if (child->class_name == "Workspace") workspace = child.get();
+    if (!workspace || !player) return nullptr;
+    Instance* fallback = nullptr;
+    for (const auto& child : workspace->children) {
+        if (child->class_name != "Model") continue;
+        if (child->name == player->name) return child.get();
+        if (!fallback) {
+            for (const auto& sub : child->children)
+                if (sub->class_name == "Humanoid") fallback = child.get();
+        }
+    }
+    return fallback;
+}
+} // namespace
+
+void Runtime::on_character_removing() {
+    if (impl_->net_context == NetContext::Server || !impl_->local_player) return;
+    fire_instance_signal(this, L_, impl_->local_player, "CharacterRemoving",
+                         {arg_instance(local_character_of(model_, impl_->local_player))});
+    process_threads(this);
+}
+
+void Runtime::on_character_respawn() {
+    if (impl_->net_context == NetContext::Server || !impl_->local_player) return;
+    Instance* player = impl_->local_player;
+    fire_instance_signal(this, L_, player, "CharacterAdded",
+                         {arg_instance(local_character_of(model_, player))});
+    // ResetOnSpawn: ScreenGuis whose StarterGui original resets are
+    // destroyed and re-cloned (their LocalScripts restart); others keep
+    // their live state. PlayerScripts are never touched by respawn.
+    Instance* starter = nullptr;
+    Instance* player_gui = nullptr;
+    for (const auto& child : model_.root().children)
+        if (child->class_name == "StarterGui") starter = child.get();
+    for (const auto& child : player->children)
+        if (child->class_name == "PlayerGui") player_gui = child.get();
+    if (starter && player_gui) {
+        std::vector<Instance*> clones;
+        for (const auto& child : player_gui->children)
+            if (child->class_name == "ScreenGui") clones.push_back(child.get());
+        for (Instance* clone : clones) {
+            Instance* original = nullptr;
+            for (const auto& child : starter->children)
+                if (child->class_name == "ScreenGui" && child->name == clone->name) original = child.get();
+            bool reset = true;
+            if (original) {
+                const Variant* r = nullptr;
+                auto it = original->properties.find("ResetOnSpawn");
+                if (it != original->properties.end()) r = &it->second;
+                reset = !r || r->type != ValueType::Bool || r->bool_value;
+            }
+            if (!reset || !original) continue;
+            std::string name = clone->name;
+            model_.delete_instance(*clone);
+            Instance& fresh = model_.clone_instance(*original, *player_gui, name);
+            std::vector<Instance*> stack{&fresh};
+            while (!stack.empty()) {
+                Instance* cur = stack.back(); stack.pop_back();
+                for (const auto& c : cur->children) stack.push_back(c.get());
+                if (cur->class_name == "LocalScript") start_script_instance(cur);
+            }
+        }
+    }
+    process_threads(this);
+}
+
 bool Runtime::start_scripts() {
     setup_player_gui();
     // After cloning, client scripts are the copies under PlayerGui;
@@ -970,7 +1089,7 @@ bool Runtime::start_scripts() {
     }
     auto under_player_gui = [](const Instance* inst) {
         for (const Instance* cur = inst->parent; cur; cur = cur->parent)
-            if (cur->class_name == "PlayerGui") return true;
+            if (cur->class_name == "PlayerGui" || cur->class_name == "PlayerScripts") return true;
         return false;
     };
     // StarterPlayer/StarterPack/ReplicatedFirst LocalScripts are client
@@ -980,6 +1099,13 @@ bool Runtime::start_scripts() {
         for (const Instance* cur = inst->parent; cur; cur = cur->parent)
             if (cur->class_name == "StarterPlayer" || cur->class_name == "StarterPack" ||
                 cur->class_name == "ReplicatedFirst") return true;
+        return false;
+    };
+    // Scripts inside a StarterPlayerScripts container are cloned into
+    // PlayerScripts; the originals must not also run in place.
+    auto under_starter_player_scripts = [](const Instance* inst) {
+        for (const Instance* cur = inst->parent; cur; cur = cur->parent)
+            if (cur->class_name == "StarterPlayerScripts" || cur->name == "StarterPlayerScripts") return true;
         return false;
     };
     struct Found {
@@ -1007,7 +1133,8 @@ bool Runtime::start_scripts() {
         if (inst->class_name == "Script") {
             if (!under_starter(inst)) server.push_back({inst, false});
         } else if (inst->class_name == "LocalScript") {
-            if ((player_gui_exists && under_player_gui(inst)) || under_client_container(inst) ||
+            if ((player_gui_exists && under_player_gui(inst)) ||
+                (under_client_container(inst) && !(player_gui_exists && under_starter_player_scripts(inst))) ||
                 (!player_gui_exists && under_starter(inst))) client.push_back({inst, true});
             else if (player_gui_exists && under_starter(inst)) { /* original; its clone runs */ }
             else log("warn", "LocalScript '" + model_.path_of(*inst) +
@@ -1015,34 +1142,7 @@ bool Runtime::start_scripts() {
                      model_.path_of(*inst));
         }
     }
-    auto start_one = [&](Instance* inst) {
-        auto source_it = inst->properties.find("Source");
-        std::string source = (source_it != inst->properties.end() &&
-                              source_it->second.type == ValueType::String)
-                                 ? source_it->second.string_value
-                                 : "";
-        if (source.empty()) return;
-        std::string path = model_.path_of(*inst);
-        Thread* t = make_thread(this, L_, path);
-        push_instance(t->co, inst);
-        lua_setglobal(t->co, "script");
-        std::string error;
-        if (!load_chunk(t->co, source, "=" + path, error)) {
-            report_error(error, error, path);
-            t->dead = true;
-            return;
-        }
-        if (impl_->debug_mode) {
-            // Breakpoints apply to the script's main chunk function
-            // (the closure luau_load just left on the stack). Nested
-            // function bodies are reached with step-into.
-            auto it = impl_->debug_breakpoints.find(path);
-            if (it != impl_->debug_breakpoints.end()) {
-                for (int line : it->second) lua_breakpoint(t->co, -1, line, 1);
-            }
-        }
-        resume_thread(this, t);
-    };
+    auto start_one = [&](Instance* inst) { start_script_instance(inst); };
     if (impl_->net_context == NetContext::Client) {
         // Client contexts run LocalScripts (and nothing else) — server
         // Scripts in the replicated tree stay inert here, exactly like a

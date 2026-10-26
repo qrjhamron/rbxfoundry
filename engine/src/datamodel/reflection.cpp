@@ -370,7 +370,7 @@ const std::set<std::string>& known_classes() {
     static const std::set<std::string> classes = {
         "DataModel", "Workspace", "Lighting", "ReplicatedStorage", "ServerStorage",
         "ServerScriptService", "StarterGui", "StarterPack", "StarterPlayer",
-        "StarterCharacterScripts", "Teams", "Team", "SoundService", "Players", "Player", "PlayerGui",
+        "StarterCharacterScripts", "Teams", "Team", "SoundService", "Players", "Player", "PlayerGui", "PlayerScripts",
         "Folder", "Model", "Terrain", "Part", "MeshPart", "SpawnLocation", "Seat", "WedgePart",
         "CornerWedgePart", "UnionOperation", "NegateOperation", "Script", "LocalScript",
         "ModuleScript", "Camera", "StringValue", "IntValue", "NumberValue", "BoolValue",

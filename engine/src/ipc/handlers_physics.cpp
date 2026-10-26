@@ -111,8 +111,11 @@ runtime_->set_character_resolver([&](Instance* player) -> Instance* {
                     }
                     for (const std::string& event : physics_->take_events()) {
                         events.push(Json(event));
-                        if (event == "died" && physics_->humanoid())
+                        if (event == "died" && physics_->humanoid()) {
                             runtime_->fire_event(physics_->humanoid(), "Died");
+                            runtime_->on_character_removing();
+                        }
+                        if (event == "respawned") runtime_->on_character_respawn();
                     }
                     if (physics_->humanoid())
                         runtime_->set_humanoid_state(physics_->humanoid(),

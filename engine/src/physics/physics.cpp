@@ -274,6 +274,10 @@ struct PhysicsWorld::Impl {
     ObjectLayerFilter object_layer_filter;
     CharacterVirtual::ExtendedUpdateSettings update_settings;
     struct CharState {
+        Instance* seated_on = nullptr; // Seat currently sat on (Gate 4)
+        double seat_cooldown = 0.0;    // re-seat suppression after standing
+        bool dead = false;           // died event already fired
+        double respawn_timer = -1.0; // >=0: counting down to respawn
         Ref<CharacterVirtual> character;
         Instance* model = nullptr;
         Instance* humanoid = nullptr;
@@ -305,6 +309,7 @@ struct PhysicsWorld::Impl {
     bool built = false;
     std::vector<Ref<Constraint>> constraints;
     Ref<CollisionMatrixFilter> group_filter;
+    std::vector<Instance*> seat_instances; // refreshed by sync_bodies
     std::map<std::string, uint32> group_ids;
     std::set<std::pair<BodyID, BodyID>> touching;
     std::vector<std::pair<Instance*, Instance*>> touch_events;
@@ -801,6 +806,7 @@ void PhysicsWorld::build_world() {
 
 
 void PhysicsWorld::sync_bodies() {
+    impl_->seat_instances.clear();
     refresh_group_matrix(*impl_, model_);
     if (!impl_->built) { build_world(); return; }
     Impl& im = *impl_;
@@ -830,6 +836,7 @@ void PhysicsWorld::sync_bodies() {
         for (const auto& child : inst->children) stack.push_back(child.get());
         if (inst == workspace || !DataModel::is_base_part(inst->class_name)) continue;
         if (in_character(inst)) continue;
+        if (inst->class_name == "Seat") im.seat_instances.push_back(inst);
         live.insert(inst);
         uint64_t sig = part_signature(*inst);
         auto it = im.bodies.find(inst);
@@ -1248,7 +1255,8 @@ PhysicsWorld::CharacterInfo PhysicsWorld::character_info_at(size_t index) const 
     info.yaw = ch.facing_yaw;
     if (ch.humanoid) info.health = prop_number(*ch.humanoid, "Health", 100.0);
     double speed = std::sqrt(vel.GetX() * vel.GetX() + vel.GetZ() * vel.GetZ());
-    if (info.health <= 0) info.state = "Dead";
+    if (ch.seated_on) info.state = "Seated";
+    else if (info.health <= 0) info.state = "Dead";
     else if (!info.grounded) info.state = vel.GetY() > 1.0 ? "Jumping" : "Freefall";
     else if (speed > 0.5) info.state = "Running";
     else info.state = "Running"; // Humanoid reports Running even idle-ish
@@ -1369,6 +1377,37 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
             ch.facing_yaw = std::atan2(-wish[0], -wish[1]);
         }
         ch.prev_vertical_velocity = ch.vertical_velocity;
+        // Seats (Gate 4): touching a Seat while grounded sits; the
+        // character is pinned to the seat top until jump stands it up.
+        if (ch.seat_cooldown > 0) ch.seat_cooldown -= dt;
+        if (ch.seated_on && ch.jump_input) { ch.seated_on = nullptr; ch.seat_cooldown = 0.6; }
+        if (!ch.seated_on && grounded && ch.seat_cooldown <= 0) {
+            Vec3 cpos = ch.character->GetPosition();
+            for (Instance* seat : im.seat_instances) {
+                Variant scf = cframe_of(*seat);
+                auto ssize = prop_vec3(*seat, "Size", {4, 1, 2});
+                double top = scf.position[1] + ssize[1] / 2.0;
+                if (std::abs(cpos.GetX() - scf.position[0]) <= ssize[0] / 2.0 + 0.4 &&
+                    std::abs(cpos.GetZ() - scf.position[2]) <= ssize[2] / 2.0 + 0.4 &&
+                    std::abs((cpos.GetY() - 2.0) - top) < 1.4) {
+                    ch.seated_on = seat;
+                    break;
+                }
+            }
+        }
+        if (ch.seated_on) {
+            Variant scf = cframe_of(*ch.seated_on);
+            auto ssize = prop_vec3(*ch.seated_on, "Size", {4, 1, 2});
+            double top = scf.position[1] + ssize[1] / 2.0;
+            ch.character->SetPosition(Vec3(static_cast<float>(scf.position[0]),
+                                           static_cast<float>(top + 1.6),
+                                           static_cast<float>(scf.position[2])));
+            ch.character->SetLinearVelocity(Vec3::sZero());
+            ch.vertical_velocity = 0;
+            pose_character(im, model_, ch, ch.character->GetPosition(), dt);
+            for (Instance* part : ch.parts) moved.push_back(part);
+            continue;
+        }
         if (grounded) {
             ch.vertical_velocity = ch.jump_input ? jump_power : -1.0;
         } else {
@@ -1393,9 +1432,27 @@ std::vector<Instance*> PhysicsWorld::step(double dt) {
             model_.set_property(*ch.humanoid, "Health", Variant::make_float64(health), ignored);
             if (health <= 0) ch.events.push_back("died");
         }
-        if (ch.humanoid && prop_number(*ch.humanoid, "Health", 100.0) <= 0 &&
-            std::find(ch.events.begin(), ch.events.end(), "died") == ch.events.end()) {
+        if (ch.humanoid && prop_number(*ch.humanoid, "Health", 100.0) <= 0 && !ch.dead) {
+            ch.dead = true;
             ch.events.push_back("died");
+            if (ch.respawn_timer < 0) ch.respawn_timer = 1.0; // 1s to respawn
+        }
+        if (ch.respawn_timer >= 0) {
+            ch.respawn_timer -= dt;
+            if (ch.respawn_timer < 0) {
+                // Respawn: same model, back at spawn with full health
+                // (the model instance is reused, not recreated).
+                ch.character->SetPosition(Vec3(static_cast<float>(im.spawn_point[0]),
+                                               static_cast<float>(im.spawn_point[1]),
+                                               static_cast<float>(im.spawn_point[2])));
+                ch.vertical_velocity = 0;
+                if (ch.humanoid) {
+                    std::string ignored;
+                    model_.set_property(*ch.humanoid, "Health", Variant::make_float64(100.0), ignored);
+                }
+                ch.dead = false;
+                ch.events.push_back("respawned");
+            }
         }
         Vec3 pos = ch.character->GetPosition();
         if (pos.GetY() < -100.0) {
