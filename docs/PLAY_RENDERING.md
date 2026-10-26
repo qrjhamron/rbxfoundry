@@ -47,9 +47,22 @@ PlaybackState, elapsed/duration). Touch input (`play input --touch`,
 `net input --player N --touch`) fires `TouchTap` through the same
 native hit-test; net GUI input is per-client by construction.
 
+## Lifecycle
+
+StarterPlayerScripts clones into `Player/PlayerScripts` once at join
+and is never re-run on respawn. On death the runtime fires
+`Humanoid.Died` (once) and `CharacterRemoving`; after a 1-second
+respawn the character returns at spawn with full health and
+`CharacterAdded` fires. ScreenGuis whose StarterGui original has
+`ResetOnSpawn = true` (the default) are destroyed and re-cloned —
+their LocalScripts restart with fresh state — while
+`ResetOnSpawn = false` GUIs keep their live state. The character model
+instance itself is reused across respawn rather than recreated.
+
 ## Known limitations
 
-- `ResetOnSpawn` does not yet re-clone PlayerGui on respawn.
+- StarterPlayer scripts other than StarterPlayerScripts contents run
+  in place; character-model recreation on respawn is not modelled.
 - UIGradient evaluates at most 8 keypoints and does not model `Offset`.
 - The character is part of the 3D scene extraction; GUI is composited in
   screen space only (SurfaceGui/BillboardGui are part of the 3D pass).
